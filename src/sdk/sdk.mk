@@ -139,6 +139,19 @@ $(OF_INIT_OBJ): $(OF_INIT_SRC)
 	@mkdir -p $(dir $@)
 	$(CC) $(ALL_CFLAGS) -c -o $@ $<
 
+# of_sdl2.c is the single implementation TU for the SDL2 / SDL_mixer
+# compatibility layer (<SDL2/SDL.h>, <SDL2/SDL_mixer.h>). It is auto-linked
+# into every app so SDL ports need no extra Makefile wiring; --gc-sections
+# drops it entirely from apps that call no SDL_* function, so non-SDL apps
+# pay nothing. Apps that use SDL_mixer *music* (Mix_PlayMusic) also append
+# $(OF_MIDI_SRC) to SRCS, since that path pulls in of_midi.
+OF_SDL2_SRC = $(SDK_DIR)/of_sdl2.c
+OF_SDL2_OBJ = $(OBJ_DIR)/of_sdl2.o
+
+$(OF_SDL2_OBJ): $(OF_SDL2_SRC)
+	@mkdir -p $(dir $@)
+	$(CC) $(ALL_CFLAGS) -c -o $@ $<
+
 # ── Sources / objects ────────────────────────────────────────────────
 SRCS_CXX ?=
 APP_C_OBJS   = $(patsubst %.c,$(OBJ_DIR)/%.o,$(filter %.c,$(SRCS)))
@@ -148,10 +161,11 @@ APP_OBJS     = $(APP_C_OBJS) $(APP_CXX_OBJS)
 # ── Pocket build ─────────────────────────────────────────────────────
 # OF_INIT_OBJ is linked alongside the app objects so its constructor
 # (in .init_array, KEEP'd by app.ld) is picked up by the linker even
-# under --gc-sections.
-$(BUILD_DIR)/app.elf: $(APP_OBJS) $(OF_INIT_OBJ) $(APP_LD) $(CRT_OBJS)
+# under --gc-sections. OF_SDL2_OBJ supplies the SDL2/SDL_mixer shim and is
+# garbage-collected away when unused.
+$(BUILD_DIR)/app.elf: $(APP_OBJS) $(OF_INIT_OBJ) $(OF_SDL2_OBJ) $(APP_LD) $(CRT_OBJS)
 	@mkdir -p $(dir $@)
-	$(LD) $(ALL_LDFLAGS) -o $@ $(CRT_OBJS) $(APP_OBJS) $(OF_INIT_OBJ) $(LIBS)
+	$(LD) $(ALL_LDFLAGS) -o $@ $(CRT_OBJS) $(APP_OBJS) $(OF_INIT_OBJ) $(OF_SDL2_OBJ) $(LIBS)
 
 $(OBJ_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -182,5 +196,5 @@ app_pc: $(SRCS) $(SDK_DIR)/pc/of_sdl2.c $(OF_INIT_SRC) $(SDK_DIR)/include/of.h
 
 # ── Clean ────────────────────────────────────────────────────────────
 sdk-clean:
-	rm -f $(APP_OBJS) $(BUILD_DIR)/app.elf app_pc
+	rm -f $(APP_OBJS) $(OF_INIT_OBJ) $(OF_SDL2_OBJ) $(BUILD_DIR)/app.elf app_pc
 	@if [ "$(OBJ_DIR)" != "." ] && [ -d "$(OBJ_DIR)" ]; then rm -rf "$(OBJ_DIR)"; fi

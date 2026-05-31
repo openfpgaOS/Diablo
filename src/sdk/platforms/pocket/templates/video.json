@@ -57,6 +57,14 @@
                 "aspect_h": 3,
                 "rotation": 0,
                 "mirror": 0
+            },
+            {
+                "width": 640,
+                "height": 480,
+                "aspect_w": 4,
+                "aspect_h": 3,
+                "rotation": 0,
+                "mirror": 0
             }
         ]
     }
