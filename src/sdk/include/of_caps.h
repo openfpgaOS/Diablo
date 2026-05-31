@@ -5,7 +5,7 @@
  * launching the application. Apps read it to discover the platform,
  * available hardware, memory layout, and OS services.
  *
- * This replaces hardcoded addresses (framebuffer base, sample pool,
+ * This replaces hardcoded addresses (framebuffer base, audio reserve,
  * GPU MMIO window, ...) and enables the same app binary to run on
  * different targets (Pocket, MiSTer) and core variants (full, lite, 3d).
  *
@@ -41,7 +41,6 @@ extern "C" {
 #define OF_HW_NET           (1 << 2)    /* Networking (link cable / serial / wifi) */
 #define OF_HW_ANALOGIZER    (1 << 3)    /* Analog video output */
 #define OF_HW_GPU_SPAN      (1 << 4)    /* GPU span renderer (always set) */
-#define OF_HW_GPU_TRIANGLE  (1 << 5)    /* GPU triangle rasterizer (Full only) */
 #define OF_HW_MIDI          (1 << 6)    /* MIDI playback (sample-based synth) */
 #define OF_HW_WIFI          (1 << 7)    /* Wireless networking */
 #define OF_HW_FPU           (1 << 8)    /* Hardware FPU (RISC-V F extension) */
@@ -51,11 +50,15 @@ extern "C" {
 #define OF_HW_GPU_ALPHA     (1 << 12)   /* GPU alpha / additive blending */
 #define OF_HW_GPU_PERSP     (1 << 13)   /* GPU perspective-correct spans */
 #define OF_HW_GPU_FRAGPIPE  (1 << 14)   /* GPU 1-px/cycle fragment pipeline */
+#define OF_HW_GPU_PARAM_SPAN_LIST (1 << 15) /* GPU parametric span-list command */
+#define OF_HW_GPU_PARAM_SPAN_Z    (1 << 16) /* Param-span Quake-compatible z writes */
+#define OF_HW_GPU_PARAM_SPAN_ZTEST (1 << 17) /* Param-span Quake-compatible z test/write */
+#define OF_HW_GPU_PARAM_SPAN_Q29_SCALE (1 << 18) /* Param-span Q29 dynamic scale */
 
 /* Convenience: all the GPU bits an app might care about for renderer choice. */
-#define OF_HW_GPU_LITE_MASK  (OF_HW_GPU_SPAN | OF_HW_GPU_PERSP | OF_HW_GPU_FRAGPIPE)
-#define OF_HW_GPU_FULL_MASK  (OF_HW_GPU_LITE_MASK | OF_HW_GPU_TRIANGLE | \
-                              OF_HW_GPU_VCOLOR | OF_HW_GPU_BILINEAR | OF_HW_GPU_ALPHA)
+#define OF_HW_GPU_LITE_MASK  (OF_HW_GPU_SPAN | OF_HW_GPU_FRAGPIPE)
+#define OF_HW_GPU_FULL_MASK  (OF_HW_GPU_LITE_MASK | OF_HW_GPU_VCOLOR | \
+                              OF_HW_GPU_BILINEAR | OF_HW_GPU_ALPHA)
 
 struct of_capabilities {
     uint32_t magic;             /* OF_CAPS_MAGIC */
@@ -69,8 +72,8 @@ struct of_capabilities {
     uint32_t fb_width;          /* Framebuffer width in pixels */
     uint32_t fb_height;         /* Framebuffer height in pixels */
     uint32_t fb_stride;         /* Bytes per row */
-    uint32_t sample_base;       /* Audio sample pool base address */
-    uint32_t sample_size;       /* Audio sample pool size in bytes */
+    uint32_t sample_base;       /* Persistent audio reservation base */
+    uint32_t sample_size;       /* Persistent audio reservation bytes */
 
     /* Hardware features */
     uint32_t hw_features;       /* OF_HW_* bitmask */
@@ -86,9 +89,6 @@ struct of_capabilities {
     /* OS info */
     uint32_t os_version;        /* Packed: major.minor.patch */
     uint32_t cpu_freq_hz;       /* CPU clock frequency */
-    uint32_t services_table;    /* Address of OS services table (0 = none).
-                                 * Legacy: new apps get the same pointer
-                                 * via the AT_OF_SVC auxv tag. */
 
     /* Memory bases for inline accessors that need to translate
      * pointers without hardcoding target addresses. Added in v2. */

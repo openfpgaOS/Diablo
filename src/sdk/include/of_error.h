@@ -34,20 +34,6 @@ typedef enum {
     OF_ERR_BUSY              = -100,
 } of_error_t;
 
-/* Boolean parameter constants -- pass these to APIs that take an `int
- * enable` / `int loop` / `int hflip` flag for self-documenting call sites:
- *   of_mixer_set_bidi(voice, OF_ENABLE);
- *   of_midi_play(data, len, OF_LOOP);
- */
-#define OF_DISABLE  0
-#define OF_ENABLE   1
-#define OF_OFF      0
-#define OF_ON       1
-#define OF_NO       0
-#define OF_YES      1
-#define OF_ONCE     0
-#define OF_LOOP     1
-
 #ifdef __cplusplus
 }
 #endif

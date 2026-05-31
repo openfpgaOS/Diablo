@@ -21,7 +21,9 @@ ENTRY(_start)
 
 MEMORY {
     APP_BRAM (rwx) : ORIGIN = 0x00004000, LENGTH = 0x3800
-    SDRAM    (rwx) : ORIGIN = 0x10400000, LENGTH = 48M
+    /* Ends at 0x13A7C000: below the 4 MB OS file cache, dynamic audio
+     * reservation, and 512 KB app stack in the no-SoundFont case. */
+    SDRAM    (rwx) : ORIGIN = 0x10400000, LENGTH = 0x0367C000
 }
 
 SECTIONS {
@@ -32,6 +34,16 @@ SECTIONS {
         *(.text*)
         *(.rodata*)
         *(.srodata*)
+        . = ALIGN(4);
+    } > SDRAM
+
+    .eh_frame : {
+        . = ALIGN(4);
+        PROVIDE(__EH_FRAME_BEGIN__ = .);
+        KEEP(*(.eh_frame))
+        KEEP(*(.eh_frame.*))
+        LONG(0);
+        PROVIDE(__FRAME_END__ = .);
         . = ALIGN(4);
     } > SDRAM
 
@@ -106,7 +118,6 @@ SECTIONS {
     /DISCARD/ : {
         *(.note.*)
         *(.comment)
-        *(.eh_frame*)
         *(.riscv.attributes)
     }
 }

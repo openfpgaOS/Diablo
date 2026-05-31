@@ -21,6 +21,14 @@
             },
             {
                 "id": 2,
+                "name": "OS Config",
+                "required": false,
+                "parameters": 0,
+                "extensions": ["ini"],
+                "deferload": true
+            },
+            {
+                "id": 3,
                 "name": "Application",
                 "required": false,
                 "parameters": 0,
@@ -28,35 +36,27 @@
                 "deferload": true
             },
             {
-                "id": 3,
+                "id": 4,
                 "name": "Data 1",
                 "required": false,
                 "parameters": 0,
-                "extensions": ["mid", "mod", "dat", "png", "bin", "grp", "pak", "wad", "rom", "nes", "iso"],
-                "deferload": true
-            },
-            {
-                "id": 4,
-                "name": "Data 2",
-                "required": false,
-                "parameters": 0,
-                "extensions": ["mid", "mod", "ofsf", "dat", "png", "bin", "grp", "pak", "wad", "rom", "nes", "iso"],
+                "extensions": ["mid", "dat", "png", "bin", "grp", "pak", "wad", "rom", "nes"],
                 "deferload": true
             },
             {
                 "id": 5,
-                "name": "Data 3",
+                "name": "Data 2",
                 "required": false,
                 "parameters": 0,
-                "extensions": ["mid", "dat", "png", "bin", "grp", "pak", "wad", "rom", "nes", "iso"],
+                "extensions": ["mid", "dat", "png", "bin", "grp", "pak", "wad", "rom", "nes"],
                 "deferload": true
             },
             {
                 "id": 6,
-                "name": "Data 4",
+                "name": "Data 3",
                 "required": false,
                 "parameters": 0,
-                "extensions": ["mid", "dat", "png", "bin", "grp", "pak", "wad", "rom", "nes", "iso"],
+                "extensions": ["mid", "dat", "png", "bin", "grp", "pak", "wad", "rom", "nes"],
                 "deferload": true
             },
             {

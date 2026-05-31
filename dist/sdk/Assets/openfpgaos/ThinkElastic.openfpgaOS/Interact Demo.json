@@ -12,6 +12,10 @@
             },
             {
                 "id": 2,
+                "filename": "interactdemo.ini"
+            },
+            {
+                "id": 3,
                 "filename": "interactdemo.elf"
             }
         ]

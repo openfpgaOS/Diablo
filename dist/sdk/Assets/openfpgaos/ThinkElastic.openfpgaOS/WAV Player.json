@@ -12,10 +12,14 @@
             },
             {
                 "id": 2,
-                "filename": "wavdemo.elf"
+                "filename": "wavdemo.ini"
             },
             {
                 "id": 3,
+                "filename": "wavdemo.elf"
+            },
+            {
+                "id": 4,
                 "filename": "audio.wav"
             }
         ]

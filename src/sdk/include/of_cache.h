@@ -75,24 +75,6 @@ static inline volatile void *of_uncached(const void *ptr) {
                              - c->sdram_base + c->sdram_uncached_base);
 }
 
-/* Read/write single bytes without polluting the D-cache */
-static inline uint8_t of_read_uncached8(const void *ptr, uint32_t offset) {
-    return ((const volatile uint8_t *)of_uncached(ptr))[offset];
-}
-
-static inline void of_write_uncached8(void *ptr, uint32_t offset, uint8_t val) {
-    ((volatile uint8_t *)of_uncached(ptr))[offset] = val;
-}
-
-/* Read 16/32-bit values without cache (must be naturally aligned) */
-static inline uint16_t of_read_uncached16(const void *ptr, uint32_t offset) {
-    return ((const volatile uint16_t *)of_uncached(ptr))[offset];
-}
-
-static inline uint32_t of_read_uncached32(const void *ptr, uint32_t offset) {
-    return ((const volatile uint32_t *)of_uncached(ptr))[offset];
-}
-
 #else /* OF_PC */
 
 static inline void of_cache_flush_video(void) { /* no-op on PC */ }
@@ -103,10 +85,6 @@ static inline void of_cache_invalidate_icache(void) { /* no-op on PC */ }
 
 /* PC: no cache — just access directly */
 static inline volatile void *of_uncached(const void *ptr) { return (volatile void *)ptr; }
-static inline uint8_t  of_read_uncached8(const void *ptr, uint32_t offset) { return ((const uint8_t *)ptr)[offset]; }
-static inline void     of_write_uncached8(void *ptr, uint32_t offset, uint8_t val) { ((uint8_t *)ptr)[offset] = val; }
-static inline uint16_t of_read_uncached16(const void *ptr, uint32_t offset) { return ((const uint16_t *)ptr)[offset]; }
-static inline uint32_t of_read_uncached32(const void *ptr, uint32_t offset) { return ((const uint32_t *)ptr)[offset]; }
 
 #endif /* OF_PC */
 

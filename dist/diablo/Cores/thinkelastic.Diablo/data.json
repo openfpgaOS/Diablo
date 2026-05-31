@@ -1,0 +1,292 @@
+{
+    "data": {
+        "magic": "APF_VER_1",
+        "data_slots": [
+            {
+                "id": 0,
+                "name": "Game",
+                "required": true,
+                "parameters": 275,
+                "extensions": [
+                    "json"
+                ]
+            },
+            {
+                "id": 1,
+                "name": "OS Binary",
+                "required": false,
+                "parameters": 0,
+                "extensions": [
+                    "bin"
+                ],
+                "deferload": true
+            },
+            {
+                "id": 2,
+                "name": "OS Config",
+                "required": false,
+                "parameters": 0,
+                "extensions": [
+                    "ini"
+                ],
+                "deferload": true
+            },
+            {
+                "id": 3,
+                "name": "Application",
+                "required": false,
+                "parameters": 0,
+                "extensions": [
+                    "elf"
+                ],
+                "deferload": true
+            },
+            {
+                "id": 4,
+                "name": "DIABDAT MPQ",
+                "required": false,
+                "parameters": 0,
+                "extensions": [
+                    "mpq"
+                ],
+                "deferload": true
+            },
+            {
+                "id": 5,
+                "name": "Data 2",
+                "required": false,
+                "parameters": 0,
+                "extensions": [
+                    "mid",
+                    "mod",
+                    "ofsf",
+                    "dat",
+                    "png",
+                    "bin",
+                    "grp",
+                    "pak",
+                    "wad",
+                    "rom",
+                    "nes",
+                    "iso",
+                    "mpq"
+                ],
+                "deferload": true
+            },
+            {
+                "id": 6,
+                "name": "Data 3",
+                "required": false,
+                "parameters": 0,
+                "extensions": [
+                    "mid",
+                    "dat",
+                    "png",
+                    "bin",
+                    "grp",
+                    "pak",
+                    "wad",
+                    "rom",
+                    "nes",
+                    "iso",
+                    "mpq"
+                ],
+                "deferload": true
+            },
+            {
+                "id": 7,
+                "name": "Data 4",
+                "required": false,
+                "parameters": 0,
+                "extensions": [
+                    "mpq",
+                    "ofsf",
+                    "mid",
+                    "dat",
+                    "png",
+                    "bin",
+                    "grp",
+                    "pak",
+                    "wad",
+                    "rom",
+                    "nes",
+                    "iso"
+                ],
+                "deferload": true
+            },
+            {
+                "id": 8,
+                "name": "Shared Config",
+                "required": false,
+                "parameters": "0x84",
+                "nonvolatile": true,
+                "address": "0x20380000",
+                "size_maximum": "0x40000",
+                "extensions": [
+                    "cfg",
+                    "bin"
+                ]
+            },
+            {
+                "id": 10,
+                "name": "Save 0",
+                "required": false,
+                "parameters": "0x84",
+                "nonvolatile": true,
+                "address": "0x20100000",
+                "size_maximum": "0x40000",
+                "extensions": [
+                    "sv",
+                    "sav"
+                ]
+            },
+            {
+                "id": 11,
+                "name": "Save 1",
+                "required": false,
+                "parameters": "0x84",
+                "nonvolatile": true,
+                "address": "0x20140000",
+                "size_maximum": "0x40000",
+                "extensions": [
+                    "sv",
+                    "sav"
+                ]
+            },
+            {
+                "id": 12,
+                "name": "Save 2",
+                "required": false,
+                "parameters": "0x84",
+                "nonvolatile": true,
+                "address": "0x20180000",
+                "size_maximum": "0x40000",
+                "extensions": [
+                    "sv",
+                    "sav"
+                ]
+            },
+            {
+                "id": 13,
+                "name": "Save 3",
+                "required": false,
+                "parameters": "0x84",
+                "nonvolatile": true,
+                "address": "0x201C0000",
+                "size_maximum": "0x40000",
+                "extensions": [
+                    "sv",
+                    "sav"
+                ]
+            },
+            {
+                "id": 14,
+                "name": "Save 4",
+                "required": false,
+                "parameters": "0x84",
+                "nonvolatile": true,
+                "address": "0x20200000",
+                "size_maximum": "0x40000",
+                "extensions": [
+                    "sv",
+                    "sav"
+                ]
+            },
+            {
+                "id": 15,
+                "name": "Save 5",
+                "required": false,
+                "parameters": "0x84",
+                "nonvolatile": true,
+                "address": "0x20240000",
+                "size_maximum": "0x40000",
+                "extensions": [
+                    "sv",
+                    "sav"
+                ]
+            },
+            {
+                "id": 16,
+                "name": "Save 6",
+                "required": false,
+                "parameters": "0x84",
+                "nonvolatile": true,
+                "address": "0x20280000",
+                "size_maximum": "0x40000",
+                "extensions": [
+                    "sv",
+                    "sav"
+                ]
+            },
+            {
+                "id": 17,
+                "name": "Save 7",
+                "required": false,
+                "parameters": "0x84",
+                "nonvolatile": true,
+                "address": "0x202C0000",
+                "size_maximum": "0x40000",
+                "extensions": [
+                    "sv",
+                    "sav"
+                ]
+            },
+            {
+                "id": 18,
+                "name": "Save 8",
+                "required": false,
+                "parameters": "0x84",
+                "nonvolatile": true,
+                "address": "0x20300000",
+                "size_maximum": "0x40000",
+                "extensions": [
+                    "sv",
+                    "sav"
+                ]
+            },
+            {
+                "id": 19,
+                "name": "Save 9",
+                "required": false,
+                "parameters": "0x84",
+                "nonvolatile": true,
+                "address": "0x20340000",
+                "size_maximum": "0x40000",
+                "extensions": [
+                    "sv",
+                    "sav"
+                ]
+            },
+            {
+                "id": 20,
+                "name": "Hellfire Monk MPQ",
+                "required": false,
+                "parameters": 0,
+                "extensions": [
+                    "mpq"
+                ],
+                "deferload": true
+            },
+            {
+                "id": 21,
+                "name": "Hellfire Music MPQ",
+                "required": false,
+                "parameters": 0,
+                "extensions": [
+                    "mpq"
+                ],
+                "deferload": true
+            },
+            {
+                "id": 22,
+                "name": "Hellfire Voice MPQ",
+                "required": false,
+                "parameters": 0,
+                "extensions": [
+                    "mpq"
+                ],
+                "deferload": true
+            }
+        ]
+    }
+}

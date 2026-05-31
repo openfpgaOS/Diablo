@@ -4,9 +4,8 @@
  * The kernel auto-loads the first .ofsf it finds in a data slot at boot
  * and hands the buffer to apps via OF_SVC->smp_bank_preload_base. This
  * file copies the metadata (header + presets + zones) into SDRAM so the
- * CPU never reads CRAM1 during playback — only the mixer DMA touches
- * CRAM1.  Without this copy, CPU zone-reads and mixer sample-DMA
- * contend on the CRAM1 bus arbiter and eventually deadlock.
+ * app can keep compact, writable metadata while sample data remains in
+ * the preloaded SDRAM bank read by the mixer.
  */
 
 #include "include/of_smp_bank.h"

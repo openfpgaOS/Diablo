@@ -23,7 +23,7 @@ extern "C" {
 #include <stddef.h>
 
 #define OF_SVC_MAGIC    0x4F535643  /* 'OSVC' */
-#define OF_SVC_VERSION  1
+#define OF_SVC_VERSION  2   /* v2: retired AWE coprocessor slots removed */
 
 /* Forward declare input state struct */
 struct of_input_state;
@@ -43,10 +43,32 @@ typedef struct of_video_timing {
 } of_video_timing_t;
 #endif
 
-/* Forward declare AWE per-voice config -- full definition in of_awe.h.
- * Kept opaque here so this header doesn't pull the AWE-specific types
- * into every TU that just wants the services table. */
-struct awe_voice_t;
+#ifndef OF_VIDEO_MODE_T_DEFINED
+#define OF_VIDEO_MODE_T_DEFINED
+typedef struct of_video_mode {
+    uint16_t width;
+    uint16_t height;
+    uint16_t stride;
+    uint8_t color_mode;
+    uint8_t reserved;
+} of_video_mode_t;
+#endif
+
+#ifndef OF_VIDEO_CAPS_T_DEFINED
+#define OF_VIDEO_CAPS_T_DEFINED
+typedef struct of_video_caps {
+    uint16_t max_width;
+    uint16_t max_height;
+    uint16_t max_stride;
+    uint16_t physical_width;
+    uint16_t physical_height;
+    uint16_t default_width;
+    uint16_t default_height;
+    uint16_t default_stride;
+    uint32_t max_frame_bytes;
+    uint32_t color_mode_mask;
+} of_video_caps_t;
+#endif
 
 struct of_services_table {
     uint32_t magic;
@@ -161,53 +183,10 @@ struct of_services_table {
     /* -- SoundFont preload (append-only, ABI-stable) --
      *    The kernel auto-loads the first .ofsf file it finds in a data
      *    slot during boot. Apps should check smp_bank_preload_base and,
-     *    when non-NULL, skip of_smp_bank_load() / of_mixer_alloc_samples
-     *    and reuse the preloaded CRAM1 buffer directly. Older firmware
-     *    leaves these as NULL/0. */
+     *    when non-NULL, skip of_smp_bank_load() and reuse the preloaded
+     *    SDRAM buffer directly. Older firmware leaves these as NULL/0. */
     const void *smp_bank_preload_base;
     uint32_t    smp_bank_preload_size;
-
-    /* -- AWE coprocessor (RETIRED — slots kept for ABI stability) --
-     *    The AWE fabric coprocessor was removed; all of these slots are
-     *    wired to no-op stubs in services_table.c so SDK apps built
-     *    against the old ABI still link.  They silently do nothing.
-     *    Do NOT call these from new code; use the mixer + smp_voice
-     *    paths instead.  See of_awe.h for matching app-side stubs. */
-    void      (*awe_voice_load)(int voice, const struct awe_voice_t *v);
-    void      (*awe_voice_trigger)(int voice);
-    void      (*awe_voice_release)(int voice);
-    void      (*awe_voice_stop)(int voice);
-    void      (*awe_channel_set_volume)(int ch, int vol_0_127);
-    void      (*awe_channel_set_expression)(int ch, int expr_0_127);
-    void      (*awe_channel_set_pan)(int ch, int pan_0_127);
-    void      (*awe_channel_set_bend)(int ch, int bend_signed_8192);
-    void      (*awe_channel_set_mod)(int ch, int mod_0_127);
-    void      (*awe_channel_set_sustain)(int ch, int on_off);
-    void      (*awe_channel_set_brightness)(int ch, int br_0_127);
-    void      (*awe_channel_set_resonance)(int ch, int q_0_127);
-    void      (*awe_channel_set_reverb_send)(int ch, int send_0_255);
-    void      (*awe_channel_set_chorus_send)(int ch, int send_0_255);
-    void      (*awe_set_master_volume)(int vol_0_255);
-    void      (*awe_set_bend_range)(int cents);
-    uint64_t  (*awe_active_mask)(void);
-
-    /* Retired — returns 0. */
-    uint32_t  (*awe_tick_count)(void);
-
-    /* Retired — no-op. */
-    void      (*awe_set_hw_envelope)(int enabled);
-
-    /* Retired — no-op. */
-    void      (*awe_set_reverb_level)(int level);
-    void      (*awe_set_reverb_feedback)(int feedback);
-
-    /* Retired — no-op. */
-    void      (*awe_set_chorus_level)(int level);
-    void      (*awe_set_chorus_rate)(int rate);
-    void      (*awe_set_chorus_depth)(int depth);
-
-    /* Retired — no-op. */
-    void      (*awe_ramp1_trigger)(int voice, int stage, uint32_t rate);
 
     /* -- Mixer group-aware allocation (append-only, ABI-stable) --
      *    Atomic alloc-and-tag entry; lets callers that know which
@@ -308,6 +287,30 @@ struct of_services_table {
      * Nonzero values request a fixed scanout line count; hardware clamps
      * again and fixed Analogizer/SNAC modes override this request. */
     void      (*video_set_refresh_vtotal)(uint32_t v_total);
+
+    /* -- Dynamic framebuffer modes (append-only) --
+     * The active source framebuffer can be resized at runtime.  The
+     * scanout scaler maps it into the target's physical output timing. */
+    int       (*video_set_mode)(const of_video_mode_t *mode);
+    void      (*video_get_mode)(of_video_mode_t *out);
+    int       (*video_get_mode_count)(void);
+    int       (*video_get_mode_info)(int index, of_video_mode_t *out);
+    void      (*video_get_caps)(of_video_caps_t *out);
+    int       (*video_check_mode)(const of_video_mode_t *mode,
+                                  of_video_mode_t *normalized);
+
+    /* -- OS/app configuration (append-only) --
+     * Parsed from os.ini at boot. Section/key lookup is
+     * case-insensitive; values preserve case and internal spaces. */
+    int       (*config_get)(const char *section, const char *key,
+                            char *out, uint32_t out_len);
+    int       (*config_get_int)(const char *section, const char *key,
+                                int default_value);
+    int       (*config_get_bool)(const char *section, const char *key,
+                                 int default_value);
+    int       (*config_next)(const char *section, uint32_t *cursor,
+                             char *key_out, uint32_t key_len,
+                             char *value_out, uint32_t value_len);
 };
 
 #ifndef OF_PC

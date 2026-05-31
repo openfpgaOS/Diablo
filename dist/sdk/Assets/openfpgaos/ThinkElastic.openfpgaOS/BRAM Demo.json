@@ -12,6 +12,10 @@
             },
             {
                 "id": 2,
+                "filename": "bramdemo.ini"
+            },
+            {
+                "id": 3,
                 "filename": "bramdemo.elf"
             }
         ]

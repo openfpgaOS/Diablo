@@ -12,10 +12,14 @@
             },
             {
                 "id": 2,
-                "filename": "isodemo.elf"
+                "filename": "isodemo.ini"
             },
             {
                 "id": 3,
+                "filename": "isodemo.elf"
+            },
+            {
+                "id": 4,
                 "filename": "isodemo.iso"
             }
         ]

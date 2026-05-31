@@ -6,7 +6,7 @@
                 "openfpgaos"
             ],
             "shortname": "openfpgaOS",
-            "description": "openfpgaOS on VexRiscv RISC-V CPU",
+            "description": "openfpgaOS on VexiiRiscv RISC-V CPU",
             "author": "ThinkElastic",
             "url": "",
             "version": "0.1",

@@ -4,7 +4,8 @@
         "variant_select": { "id": 666, "select": false },
         "data_slots": [
             { "id": 1, "filename": "os.bin" },
-            { "id": 2, "filename": "{{APP}}.elf" },
+            { "id": 2, "filename": "{{APP}}.ini" },
+            { "id": 3, "filename": "{{APP}}.elf" },
             { "id": 7, "filename": "bank.ofsf" },
             { "id": 10, "filename": "{{APP}}.sav" },
             { "id": 11, "filename": "{{APP}}_1.sav" },

@@ -4,9 +4,9 @@
  * Minimal SDL2 implementation using of_* syscalls.
  * On PC builds, this header is never used — the real SDL2 is linked.
  *
- * Video model: the SDL screen surface points DIRECTLY at the 320x240
- * hardware framebuffer. No intermediate buffer, no copy, no cache issues.
- * SDL_Flip = of_video_flip (buffer swap).
+ * Video model: requested SDL window sizes are first offered to the OS as
+ * native framebuffer modes. If unsupported, the shim keeps a logical
+ * software surface and scales it to the active framebuffer on present.
  *
  * Covers: video (8-bit indexed surface), input, audio, timer.
  */
@@ -24,6 +24,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
 
 /* ======================================================================
  * Version / Constants
@@ -32,10 +33,14 @@
 #define SDL_MAJOR_VERSION 2
 #define SDL_MINOR_VERSION 0
 #define SDL_PATCHLEVEL    0
+#define SDL_VERSIONNUM(X, Y, Z) (((X) * 1000) + ((Y) * 100) + (Z))
+#define SDL_VERSION_ATLEAST(X, Y, Z) \
+    (SDL_VERSIONNUM(SDL_MAJOR_VERSION, SDL_MINOR_VERSION, SDL_PATCHLEVEL) >= SDL_VERSIONNUM((X), (Y), (Z)))
 
 #define SDL_INIT_VIDEO          0x00000020
 #define SDL_INIT_AUDIO          0x00000010
 #define SDL_INIT_TIMER          0x00000001
+#define SDL_INIT_JOYSTICK       0x00000200
 #define SDL_INIT_EVENTS         0x00004000
 #define SDL_INIT_GAMECONTROLLER 0x00002000
 #define SDL_INIT_EVERYTHING     0x0000FFFF
@@ -53,13 +58,18 @@
 #define SDL_WINDOW_FULLSCREEN_DESKTOP 0x00001001
 #define SDL_WINDOWPOS_CENTERED  0x2FFF0000
 #define SDL_WINDOWPOS_UNDEFINED 0x1FFF0000
+#define SDL_WINDOWPOS_UNDEFINED_DISPLAY(X) SDL_WINDOWPOS_UNDEFINED
 
 #define SDL_RENDERER_ACCELERATED    0x00000002
 #define SDL_RENDERER_PRESENTVSYNC   0x00000004
+#define SDL_RENDERER_TARGETTEXTURE  0x00000008
 
 #define SDL_PIXELFORMAT_ARGB8888    0x16362004
+#define SDL_PIXELFORMAT_ARGB2101010 0x16372004
+#define SDL_PIXELFORMAT_ARGB1555    0x15331002
 #define SDL_PIXELFORMAT_RGBA32      0x16362004
 #define SDL_PIXELFORMAT_RGB888      0x16161804
+#define SDL_PIXELFORMAT_RGB565      0x15151002
 #define SDL_PIXELFORMAT_INDEX8      0x13000001
 #define SDL_TEXTUREACCESS_STREAMING 1
 #define SDL_TEXTUREACCESS_TARGET    2
@@ -67,9 +77,35 @@
 #define SDL_QUIT            0x100
 #define SDL_KEYDOWN         0x300
 #define SDL_KEYUP           0x301
+#define SDL_TEXTINPUT       0x303
+#define SDL_MOUSEMOTION     0x400
+#define SDL_MOUSEBUTTONDOWN 0x401
+#define SDL_MOUSEBUTTONUP   0x402
+#define SDL_MOUSEWHEEL      0x403
 #define SDL_CONTROLLERBUTTONDOWN  0x650
 #define SDL_CONTROLLERBUTTONUP    0x651
 #define SDL_CONTROLLERDEVICEADDED 0x654
+
+#define SDL_DISABLE 0
+#define SDL_ENABLE  1
+#define SDL_IGNORE  0
+
+#define SDL_BUTTON_LEFT      1
+#define SDL_BUTTON_MIDDLE    2
+#define SDL_BUTTON_RIGHT     3
+#define SDL_BUTTON_WHEELUP   4
+#define SDL_BUTTON_WHEELDOWN 5
+#define SDL_BUTTON(X)        (1u << ((X) - 1))
+
+#define SDL_HAT_CENTERED 0x00
+#define SDL_HAT_UP       0x01
+#define SDL_HAT_RIGHT    0x02
+#define SDL_HAT_DOWN     0x04
+#define SDL_HAT_LEFT     0x08
+
+#define KMOD_NONE 0x0000
+#define KMOD_NUM  0x1000
+#define KMOD_CAPS 0x2000
 
 #define AUDIO_S16SYS    0x8010
 #define AUDIO_S16       0x8010
@@ -91,6 +127,8 @@ typedef uint16_t Uint16;
 typedef uint32_t Uint32;
 typedef int16_t  Sint16;
 typedef int32_t  Sint32;
+typedef int64_t  Sint64;
+typedef uint16_t SDL_Keymod;
 
 #define SDL_malloc  malloc
 #define SDL_free    free
@@ -103,6 +141,7 @@ typedef int32_t  Sint32;
 
 typedef struct { int x, y, w, h; } SDL_Rect;
 typedef struct { uint8_t r, g, b, a; } SDL_Color;
+typedef struct { uint8_t major, minor, patch; } SDL_version;
 
 typedef struct {
     int ncolors;
@@ -114,6 +153,10 @@ typedef struct {
     SDL_Palette *palette;
     uint8_t BitsPerPixel;
     uint8_t BytesPerPixel;
+    uint32_t Rmask;
+    uint32_t Gmask;
+    uint32_t Bmask;
+    uint32_t Amask;
 } SDL_PixelFormat;
 
 typedef struct {
@@ -126,9 +169,16 @@ typedef struct {
     int locked;
 } SDL_Surface;
 
-typedef struct { int unused; } SDL_Window;
+typedef struct { int w, h; uint32_t flags; } SDL_Window;
 typedef struct { int unused; } SDL_Renderer;
-typedef struct { int unused; } SDL_Texture;
+typedef struct { int w, h, pitch; void *pixels; } SDL_Texture;
+typedef struct {
+    uint32_t format;
+    int w;
+    int h;
+    int refresh_rate;
+    void *driverdata;
+} SDL_DisplayMode;
 
 typedef enum {
     SDL_SCANCODE_UNKNOWN = 0,
@@ -147,20 +197,72 @@ typedef enum {
     SDL_SCANCODE_BACKSPACE = 42,
     SDL_SCANCODE_TAB = 43,
     SDL_SCANCODE_SPACE = 44,
+    SDL_SCANCODE_CLEAR = 156,
+    SDL_SCANCODE_MINUS = 45,
+    SDL_SCANCODE_EQUALS = 46,
+    SDL_SCANCODE_LEFTBRACKET = 47,
+    SDL_SCANCODE_RIGHTBRACKET = 48,
+    SDL_SCANCODE_BACKSLASH = 49,
+    SDL_SCANCODE_SEMICOLON = 51,
+    SDL_SCANCODE_APOSTROPHE = 52,
+    SDL_SCANCODE_GRAVE = 53,
+    SDL_SCANCODE_COMMA = 54,
+    SDL_SCANCODE_PERIOD = 55,
+    SDL_SCANCODE_SLASH = 56,
+    SDL_SCANCODE_CAPSLOCK = 57,
     SDL_SCANCODE_F1 = 58, SDL_SCANCODE_F2, SDL_SCANCODE_F3, SDL_SCANCODE_F4,
     SDL_SCANCODE_F5, SDL_SCANCODE_F6, SDL_SCANCODE_F7, SDL_SCANCODE_F8,
     SDL_SCANCODE_F9, SDL_SCANCODE_F10, SDL_SCANCODE_F11, SDL_SCANCODE_F12,
+    SDL_SCANCODE_PRINTSCREEN = 70,
+    SDL_SCANCODE_SCROLLLOCK = 71,
+    SDL_SCANCODE_PAUSE = 72,
+    SDL_SCANCODE_INSERT = 73,
+    SDL_SCANCODE_HOME = 74,
+    SDL_SCANCODE_PAGEUP = 75,
     SDL_SCANCODE_DELETE = 76,
+    SDL_SCANCODE_END = 77,
+    SDL_SCANCODE_PAGEDOWN = 78,
     SDL_SCANCODE_RIGHT = 79,
     SDL_SCANCODE_LEFT = 80,
     SDL_SCANCODE_DOWN = 81,
     SDL_SCANCODE_UP = 82,
+    SDL_SCANCODE_NUMLOCKCLEAR = 83,
+    SDL_SCANCODE_KP_DIVIDE = 84,
+    SDL_SCANCODE_KP_MULTIPLY = 85,
+    SDL_SCANCODE_KP_MINUS = 86,
+    SDL_SCANCODE_KP_PLUS = 87,
+    SDL_SCANCODE_KP_ENTER = 88,
+    SDL_SCANCODE_KP_1 = 89,
+    SDL_SCANCODE_KP_2 = 90,
+    SDL_SCANCODE_KP_3 = 91,
+    SDL_SCANCODE_KP_4 = 92,
+    SDL_SCANCODE_KP_5 = 93,
+    SDL_SCANCODE_KP_6 = 94,
+    SDL_SCANCODE_KP_7 = 95,
+    SDL_SCANCODE_KP_8 = 96,
+    SDL_SCANCODE_KP_9 = 97,
+    SDL_SCANCODE_KP_0 = 98,
+    SDL_SCANCODE_KP_PERIOD = 99,
+    SDL_SCANCODE_APPLICATION = 101,
+    SDL_SCANCODE_POWER = 102,
+    SDL_SCANCODE_KP_EQUALS = 103,
+    SDL_SCANCODE_F13 = 104,
+    SDL_SCANCODE_F14 = 105,
+    SDL_SCANCODE_F15 = 106,
+    SDL_SCANCODE_HELP = 117,
+    SDL_SCANCODE_MENU = 118,
+    SDL_SCANCODE_UNDO = 122,
+    SDL_SCANCODE_SYSREQ = 154,
+    SDL_SCANCODE_AC_BACK = 270,
+    SDL_SCANCODE_MODE = 257,
     SDL_SCANCODE_LCTRL = 224,
     SDL_SCANCODE_LSHIFT = 225,
     SDL_SCANCODE_LALT = 226,
+    SDL_SCANCODE_LGUI = 227,
     SDL_SCANCODE_RCTRL = 228,
     SDL_SCANCODE_RSHIFT = 229,
     SDL_SCANCODE_RALT = 230,
+    SDL_SCANCODE_RGUI = 231,
     SDL_NUM_SCANCODES = 512,
 } SDL_Scancode;
 
@@ -172,9 +274,12 @@ typedef struct {
     uint16_t mod;
 } SDL_Keysym;
 
-typedef struct {
+typedef union {
     uint32_t type;
     struct { uint32_t type; uint8_t repeat; SDL_Keysym keysym; } key;
+    struct { uint32_t type; char text[32]; } text;
+    struct { uint32_t type; int x, y; } wheel;
+    struct { uint32_t type; uint8_t button; uint8_t state; int x, y; } button;
 } SDL_Event;
 
 typedef uint32_t SDL_AudioDeviceID;
@@ -191,7 +296,37 @@ typedef struct {
     void *userdata;
 } SDL_AudioSpec;
 
+typedef struct {
+    int needed;
+    uint16_t src_format;
+    uint16_t dst_format;
+    double rate_incr;
+    uint8_t *buf;
+    int len;
+    int len_cvt;
+    int len_mult;
+    double len_ratio;
+} SDL_AudioCVT;
+
+#define RW_SEEK_SET 0
+#define RW_SEEK_CUR 1
+#define RW_SEEK_END 2
+
+typedef struct SDL_RWops {
+    Sint64 (*size)(struct SDL_RWops *context);
+    Sint64 (*seek)(struct SDL_RWops *context, Sint64 offset, int whence);
+    size_t (*read)(struct SDL_RWops *context, void *ptr, size_t size, size_t maxnum);
+    size_t (*write)(struct SDL_RWops *context, const void *ptr, size_t size, size_t num);
+    int (*close)(struct SDL_RWops *context);
+    uint32_t type;
+    union {
+        struct { void *data1; void *data2; } unknown;
+        struct { uint8_t *base; uint8_t *here; uint8_t *stop; } mem;
+    } hidden;
+} SDL_RWops;
+
 typedef void *SDL_mutex;
+typedef struct { int __idx; } SDL_Joystick;
 
 /* Game controller */
 typedef enum {
@@ -211,6 +346,7 @@ typedef enum {
     SDL_CONTROLLER_AXIS_LEFTX, SDL_CONTROLLER_AXIS_LEFTY,
     SDL_CONTROLLER_AXIS_RIGHTX, SDL_CONTROLLER_AXIS_RIGHTY,
     SDL_CONTROLLER_AXIS_TRIGGERLEFT, SDL_CONTROLLER_AXIS_TRIGGERRIGHT,
+    SDL_CONTROLLER_AXIS_MAX,
 } SDL_GameControllerAxis;
 
 typedef struct { int __idx; } SDL_GameController;
@@ -225,6 +361,9 @@ static SDL_Texture      __sdl_tex;
 static SDL_Palette      __sdl_palette;
 static SDL_PixelFormat  __sdl_pixfmt;
 static SDL_Surface      __sdl_surface;
+static uint8_t         *__sdl_surface_storage;
+static size_t           __sdl_surface_storage_size;
+static int              __sdl_surface_uses_hw_fb;
 static int              __sdl_inited;
 
 static of_input_state_t __sdl_prev_input;
@@ -240,6 +379,8 @@ static SDL_AudioCallback __sdl_audio_cb;
 static void             *__sdl_audio_userdata;
 
 static SDL_GameController __sdl_gc;
+static SDL_Joystick       __sdl_joy;
+static SDL_Keymod         __sdl_mod_state;
 
 /* ======================================================================
  * Init / Quit
@@ -251,11 +392,21 @@ static inline int SDL_Init(uint32_t flags) {
     return 0;
 }
 static inline int SDL_InitSubSystem(uint32_t flags) { (void)flags; return 0; }
+static inline void SDL_QuitSubSystem(uint32_t flags) { (void)flags; }
 static inline void SDL_Quit(void) {}
 static inline const char *SDL_GetError(void) { return ""; }
+static inline void SDL_GetVersion(SDL_version *v) {
+    if (!v) return;
+    v->major = SDL_MAJOR_VERSION;
+    v->minor = SDL_MINOR_VERSION;
+    v->patch = SDL_PATCHLEVEL;
+}
 
 /* ======================================================================
- * Video — surface backed directly by HW framebuffer (320x240)
+ * Video — direct HW framebuffer when sizes match, software window surface
+ * otherwise.  This matches SDL's model: the app-requested window surface can
+ * be a logical drawable size, while the backend presents it to the current
+ * display framebuffer.
  *
  * Proven working sequence used by all SDK apps:
  *   of_video_clear(0) → of_video_surface() → writes → of_video_flip()
@@ -270,6 +421,10 @@ static inline void __sdl_setup_surface(void) {
     __sdl_pixfmt.palette     = &__sdl_palette;
     __sdl_pixfmt.BitsPerPixel  = 8;
     __sdl_pixfmt.BytesPerPixel = 1;
+    __sdl_pixfmt.Rmask = 0;
+    __sdl_pixfmt.Gmask = 0;
+    __sdl_pixfmt.Bmask = 0;
+    __sdl_pixfmt.Amask = 0;
 
     __sdl_surface.format     = &__sdl_pixfmt;
     __sdl_surface.w          = OF_SCREEN_W;
@@ -280,54 +435,276 @@ static inline void __sdl_setup_surface(void) {
     __sdl_inited = 1;
 }
 
+static inline void __sdl_fb_dims(int *w, int *h, int *stride) {
+    of_video_mode_t mode;
+    of_video_get_mode(&mode);
+    int fw = mode.width ? (int)mode.width : OF_SCREEN_W;
+    int fh = mode.height ? (int)mode.height : OF_SCREEN_H;
+    int fs = mode.stride ? (int)mode.stride : fw;
+    if (w) *w = fw;
+    if (h) *h = fh;
+    if (stride) *stride = fs;
+}
+
+static inline int __sdl_try_hw_fb_mode(int w, int h) {
+    if (w <= 0 || h <= 0)
+        return 0;
+    if (w > OF_VIDEO_MAX_WIDTH || h > OF_VIDEO_MAX_HEIGHT)
+        return 0;
+
+    of_video_mode_t mode;
+    of_video_get_mode(&mode);
+    if (mode.width == (uint16_t)w &&
+        mode.height == (uint16_t)h &&
+        mode.color_mode == OF_VIDEO_MODE_8BIT) {
+        return 1;
+    }
+
+    mode.width = (uint16_t)w;
+    mode.height = (uint16_t)h;
+    mode.stride = 0;
+    mode.color_mode = OF_VIDEO_MODE_8BIT;
+    mode.reserved = 0;
+    if (of_video_check_mode(&mode, NULL) < 0)
+        return 0;
+    return of_video_set_mode(&mode) == 0;
+}
+
+static inline int __sdl_configure_window_surface(int w, int h) {
+    __sdl_setup_surface();
+    if (w <= 0) w = OF_SCREEN_W;
+    if (h <= 0) h = OF_SCREEN_H;
+
+    (void)__sdl_try_hw_fb_mode(w, h);
+
+    int fw, fh, fs;
+    __sdl_fb_dims(&fw, &fh, &fs);
+    (void)fs;
+
+    __sdl_surface.w = w;
+    __sdl_surface.h = h;
+    __sdl_surface.pitch = w;
+    __sdl_surface.clip_rect = (SDL_Rect){0, 0, w, h};
+
+    if (w == fw && h == fh) {
+        __sdl_surface_uses_hw_fb = 1;
+        __sdl_surface.pixels = of_video_surface();
+        return 0;
+    }
+
+    size_t need = (size_t)w * (size_t)h;
+    if (need == 0) return -1;
+    if (need > __sdl_surface_storage_size) {
+        uint8_t *p = (uint8_t *)realloc(__sdl_surface_storage, need);
+        if (!p) return -1;
+        if (need > __sdl_surface_storage_size)
+            memset(p + __sdl_surface_storage_size, 0, need - __sdl_surface_storage_size);
+        __sdl_surface_storage = p;
+        __sdl_surface_storage_size = need;
+    }
+
+    __sdl_surface_uses_hw_fb = 0;
+    __sdl_surface.pixels = __sdl_surface_storage;
+    return 0;
+}
+
+static inline void __sdl_present_window_surface(void) {
+    if (!__sdl_surface.pixels) return;
+
+    if (__sdl_surface_uses_hw_fb) {
+        of_video_flip();
+        __sdl_surface.pixels = of_video_surface();
+        return;
+    }
+
+    int fw, fh, fs;
+    __sdl_fb_dims(&fw, &fh, &fs);
+    uint8_t *fb = of_video_surface();
+    const uint8_t *src = (const uint8_t *)__sdl_surface.pixels;
+    int sw = __sdl_surface.w;
+    int sh = __sdl_surface.h;
+    int sp = __sdl_surface.pitch;
+
+    if (sw == fw && sh == fh && sp == fs) {
+        memcpy(fb, src, (size_t)fs * (size_t)fh);
+    } else if (sw == fw && sh == fh) {
+        for (int y = 0; y < fh; y++)
+            memcpy(fb + (size_t)y * (size_t)fs,
+                   src + (size_t)y * (size_t)sp, (size_t)fw);
+    } else {
+        uint32_t xstep = ((uint32_t)sw << 16) / (uint32_t)fw;
+        uint32_t ystep = ((uint32_t)sh << 16) / (uint32_t)fh;
+        uint32_t yacc = 0;
+        for (int y = 0; y < fh; y++) {
+            int sy = (int)(yacc >> 16);
+            const uint8_t *srow = src + (size_t)sy * (size_t)sp;
+            uint8_t *drow = fb + (size_t)y * (size_t)fs;
+            uint32_t xacc = 0;
+            for (int x = 0; x < fw; x++) {
+                int sx = (int)(xacc >> 16);
+                drow[x] = srow[sx];
+                xacc += xstep;
+            }
+            yacc += ystep;
+        }
+    }
+
+    of_video_flip();
+}
+
 /* SDL2-native path */
 static inline SDL_Window *SDL_CreateWindow(const char *title, int x, int y,
                                             int w, int h, uint32_t flags) {
-    (void)title; (void)x; (void)y; (void)w; (void)h; (void)flags;
+    (void)title; (void)x; (void)y;
     of_video_init();
     __sdl_setup_surface();
+    __sdl_win.w = w > 0 ? w : OF_SCREEN_W;
+    __sdl_win.h = h > 0 ? h : OF_SCREEN_H;
+    __sdl_win.flags = flags | SDL_WINDOW_SHOWN;
+    if (__sdl_configure_window_surface(__sdl_win.w, __sdl_win.h) < 0)
+        return NULL;
     return &__sdl_win;
 }
-static inline void SDL_DestroyWindow(SDL_Window *w) { (void)w; }
+static inline void SDL_DestroyWindow(SDL_Window *w) {
+    (void)w;
+    free(__sdl_surface_storage);
+    __sdl_surface_storage = NULL;
+    __sdl_surface_storage_size = 0;
+    __sdl_surface_uses_hw_fb = 0;
+}
+static inline uint32_t SDL_GetWindowFlags(SDL_Window *w) {
+    return w ? w->flags : SDL_WINDOW_SHOWN;
+}
+static inline int SDL_GetNumVideoDisplays(void) {
+    return 1;
+}
+static inline int SDL_GetNumDisplayModes(int displayIndex) {
+    if (displayIndex != 0) return -1;
+    return of_video_get_mode_count();
+}
+static inline int SDL_GetDisplayMode(int displayIndex, int modeIndex,
+                                      SDL_DisplayMode *mode) {
+    if (displayIndex != 0 || !mode) return -1;
+    of_video_mode_t of_mode;
+    if (of_video_get_mode_info(modeIndex, &of_mode) < 0)
+        return -1;
+    mode->format = SDL_PIXELFORMAT_INDEX8;
+    mode->w = of_mode.width;
+    mode->h = of_mode.height;
+    mode->refresh_rate = 60;
+    mode->driverdata = NULL;
+    return 0;
+}
+static inline int SDL_GetCurrentDisplayMode(int displayIndex,
+                                             SDL_DisplayMode *mode) {
+    if (displayIndex != 0 || !mode) return -1;
+    of_video_mode_t of_mode;
+    of_video_get_mode(&of_mode);
+    mode->format = SDL_PIXELFORMAT_INDEX8;
+    mode->w = of_mode.width;
+    mode->h = of_mode.height;
+    mode->refresh_rate = 60;
+    mode->driverdata = NULL;
+    return 0;
+}
+static inline int SDL_GetDesktopDisplayMode(int displayIndex,
+                                             SDL_DisplayMode *mode) {
+    return SDL_GetCurrentDisplayMode(displayIndex, mode);
+}
+static inline int SDL_VideoModeOK(int width, int height, int bpp,
+                                   uint32_t flags) {
+    (void)flags;
+    if (width <= 0) width = OF_SCREEN_W;
+    if (height <= 0) height = OF_SCREEN_H;
+    if (bpp != 0 && bpp != 8)
+        return 0;
+    if (width > OF_VIDEO_MAX_WIDTH || height > OF_VIDEO_MAX_HEIGHT)
+        return 0;
+
+    of_video_mode_t mode = {
+        (uint16_t)width, (uint16_t)height, 0, OF_VIDEO_MODE_8BIT, 0
+    };
+    return of_video_check_mode(&mode, NULL) == 0 ? 8 : 0;
+}
+static inline SDL_Rect **SDL_ListModes(SDL_PixelFormat *format,
+                                        uint32_t flags) {
+    (void)flags;
+    if (format && format->BitsPerPixel != 0 && format->BitsPerPixel != 8)
+        return NULL;
+    return (SDL_Rect **)-1;
+}
+static inline int SDL_SetWindowDisplayMode(SDL_Window *w,
+                                            const SDL_DisplayMode *mode) {
+    if (!w || !mode) return -1;
+    w->w = mode->w > 0 ? mode->w : OF_SCREEN_W;
+    w->h = mode->h > 0 ? mode->h : OF_SCREEN_H;
+    return __sdl_configure_window_surface(w->w, w->h);
+}
+static inline int SDL_GetWindowDisplayMode(SDL_Window *w,
+                                            SDL_DisplayMode *mode) {
+    (void)w;
+    return SDL_GetCurrentDisplayMode(0, mode);
+}
+static inline void SDL_GetWindowSize(SDL_Window *w, int *ow, int *oh) {
+    if (ow) *ow = (w && w->w > 0) ? w->w : OF_SCREEN_W;
+    if (oh) *oh = (w && w->h > 0) ? w->h : OF_SCREEN_H;
+}
+static inline void SDL_SetWindowSize(SDL_Window *w, int width, int height) {
+    if (!w) return;
+    w->w = width > 0 ? width : OF_SCREEN_W;
+    w->h = height > 0 ? height : OF_SCREEN_H;
+    (void)__sdl_configure_window_surface(w->w, w->h);
+}
 
 static inline SDL_Surface *SDL_GetWindowSurface(SDL_Window *w) {
-    (void)w;
-    __sdl_setup_surface();
-    __sdl_surface.pixels = of_video_surface();
+    int w_out = (w && w->w > 0) ? w->w : OF_SCREEN_W;
+    int h_out = (w && w->h > 0) ? w->h : OF_SCREEN_H;
+    if (__sdl_configure_window_surface(w_out, h_out) < 0)
+        return NULL;
     return &__sdl_surface;
 }
 
 static inline int SDL_UpdateWindowSurface(SDL_Window *w) {
     (void)w;
-    of_video_flip();
+    __sdl_present_window_surface();
     return 0;
 }
 
-/* SDL 1.2 compat path — returns the 320x240 HW surface directly.
- * The app renders at whatever scale it wants into this surface.
- * Requested width/height are ignored — HW is always 320x240. */
+static inline int SDL_UpdateWindowSurfaceRects(SDL_Window *w,
+                                                const SDL_Rect *rects,
+                                                int numrects) {
+    (void)rects; (void)numrects;
+    return SDL_UpdateWindowSurface(w);
+}
+
+/* SDL 1.2 compat path — returns a surface at the requested logical size.
+ * If it does not match the hardware framebuffer, SDL_Flip scales it during
+ * presentation. */
 static inline SDL_Surface *SDL_SetVideoMode(int width, int height,
                                               int bpp, uint32_t flags) {
-    (void)width; (void)height; (void)bpp; (void)flags;
+    (void)bpp;
     of_video_init();
-    __sdl_setup_surface();
     of_video_clear(0);
-    __sdl_surface.pixels = of_video_surface();
+    __sdl_win.w = width > 0 ? width : OF_SCREEN_W;
+    __sdl_win.h = height > 0 ? height : OF_SCREEN_H;
+    __sdl_win.flags = flags | SDL_WINDOW_SHOWN;
+    if (__sdl_configure_window_surface(__sdl_win.w, __sdl_win.h) < 0)
+        return NULL;
     return &__sdl_surface;
 }
 
 static inline SDL_Surface *SDL_GetVideoSurface(void) {
-    __sdl_surface.pixels = of_video_surface();
-    return &__sdl_surface;
+    return SDL_GetWindowSurface(&__sdl_win);
 }
 
 /* Present the current frame and prepare the next back buffer.
  * Matches the proven SDK pattern: flip → clear → update pointer. */
 static inline void SDL_Flip(SDL_Surface *s) {
     (void)s;
-    of_video_flip();
+    __sdl_present_window_surface();
     of_video_clear(0);
-    __sdl_surface.pixels = of_video_surface();
+    if (__sdl_surface_uses_hw_fb)
+        __sdl_surface.pixels = of_video_surface();
 }
 
 /* ======================================================================
@@ -340,9 +717,26 @@ static inline int SDL_SetPaletteColors(SDL_Palette *palette,
     for (int i = 0; i < ncolors && (first + i) < 256; i++) {
         int idx = first + i;
         palette->colors[idx] = colors[i];
-        uint32_t rgb = ((uint32_t)colors[i].r << 16) |
-                       ((uint32_t)colors[i].g << 8) |
-                       (uint32_t)colors[i].b;
+    }
+
+    if (first == 0 && ncolors >= 256) {
+        uint32_t pal32[256];
+        for (int i = 0; i < 256; i++) {
+            SDL_Color c = palette->colors[i];
+            pal32[i] = ((uint32_t)c.r << 16) |
+                       ((uint32_t)c.g << 8) |
+                       (uint32_t)c.b;
+        }
+        of_video_palette_bulk(pal32, 256);
+        return 0;
+    }
+
+    for (int i = 0; i < ncolors && (first + i) < 256; i++) {
+        int idx = first + i;
+        SDL_Color c = palette->colors[idx];
+        uint32_t rgb = ((uint32_t)c.r << 16) |
+                       ((uint32_t)c.g << 8) |
+                       (uint32_t)c.b;
         of_video_palette((uint8_t)idx, rgb);
     }
     return 0;
@@ -417,9 +811,57 @@ static inline int SDL_RenderSetLogicalSize(SDL_Renderer *r, int w, int h) {
 }
 static inline SDL_Texture *SDL_CreateTexture(SDL_Renderer *r, uint32_t fmt,
                                               int access, int w, int h) {
-    (void)r; (void)fmt; (void)access; (void)w; (void)h; return &__sdl_tex;
+    (void)r; (void)fmt; (void)access;
+    __sdl_tex.w = w > 0 ? w : OF_SCREEN_W;
+    __sdl_tex.h = h > 0 ? h : OF_SCREEN_H;
+    __sdl_tex.pitch = __sdl_tex.w;
+    __sdl_tex.pixels = of_video_surface();
+    return &__sdl_tex;
 }
 static inline void SDL_DestroyTexture(SDL_Texture *t) { (void)t; }
+static inline int SDL_QueryTexture(SDL_Texture *t, uint32_t *format,
+                                   int *access, int *w, int *h) {
+    if (!t) return -1;
+    if (format) *format = SDL_PIXELFORMAT_INDEX8;
+    if (access) *access = SDL_TEXTUREACCESS_STREAMING;
+    if (w) *w = t->w;
+    if (h) *h = t->h;
+    return 0;
+}
+static inline SDL_bool SDL_PixelFormatEnumToMasks(uint32_t format, int *bpp,
+                                                  uint32_t *Rmask, uint32_t *Gmask,
+                                                  uint32_t *Bmask, uint32_t *Amask) {
+    switch (format) {
+    case SDL_PIXELFORMAT_ARGB8888:
+        if (bpp) *bpp = 32;
+        if (Rmask) *Rmask = 0x00ff0000;
+        if (Gmask) *Gmask = 0x0000ff00;
+        if (Bmask) *Bmask = 0x000000ff;
+        if (Amask) *Amask = 0xff000000;
+        return SDL_TRUE;
+    case SDL_PIXELFORMAT_RGB565:
+        if (bpp) *bpp = 16;
+        if (Rmask) *Rmask = 0xf800;
+        if (Gmask) *Gmask = 0x07e0;
+        if (Bmask) *Bmask = 0x001f;
+        if (Amask) *Amask = 0;
+        return SDL_TRUE;
+    case SDL_PIXELFORMAT_ARGB1555:
+        if (bpp) *bpp = 15;
+        if (Rmask) *Rmask = 0x7c00;
+        if (Gmask) *Gmask = 0x03e0;
+        if (Bmask) *Bmask = 0x001f;
+        if (Amask) *Amask = 0x8000;
+        return SDL_TRUE;
+    default:
+        if (bpp) *bpp = 8;
+        if (Rmask) *Rmask = 0;
+        if (Gmask) *Gmask = 0;
+        if (Bmask) *Bmask = 0;
+        if (Amask) *Amask = 0;
+        return SDL_TRUE;
+    }
+}
 static inline int SDL_UpdateTexture(SDL_Texture *t, const SDL_Rect *r,
                                      const void *px, int pitch) {
     (void)t; (void)r; (void)px; (void)pitch; return 0;
@@ -438,6 +880,26 @@ static inline int SDL_RenderCopy(SDL_Renderer *r, SDL_Texture *t,
 static inline void SDL_RenderPresent(SDL_Renderer *r) {
     (void)r; of_video_flip();
 }
+static inline int SDL_LockSurface(SDL_Surface *s) {
+    if (!s) return -1;
+    if (!s->pixels) s->pixels = of_video_surface();
+    s->locked++;
+    return 0;
+}
+static inline void SDL_UnlockSurface(SDL_Surface *s) {
+    if (s && s->locked > 0) s->locked--;
+}
+static inline int SDL_LockTexture(SDL_Texture *t, const SDL_Rect *r,
+                                  void **pixels, int *pitch) {
+    (void)r;
+    if (!t) return -1;
+    t->pixels = of_video_surface();
+    t->pitch = t->w > 0 ? t->w : OF_SCREEN_W;
+    if (pixels) *pixels = t->pixels;
+    if (pitch) *pitch = t->pitch;
+    return 0;
+}
+static inline void SDL_UnlockTexture(SDL_Texture *t) { (void)t; }
 
 /* ======================================================================
  * Events / Input
@@ -536,6 +998,38 @@ static inline const uint8_t *SDL_GetKeyboardState(int *numkeys) {
 
 static inline int SDL_PushEvent(SDL_Event *ev) { (void)ev; return 0; }
 static inline void SDL_PumpEvents(void) {}
+static inline int SDL_WaitEvent(SDL_Event *event) {
+    while (!SDL_PollEvent(event)) usleep(10000);
+    return 1;
+}
+static inline int SDL_WaitEventTimeout(SDL_Event *event, int timeout) {
+    uint32_t start = of_time_ms();
+    do {
+        if (SDL_PollEvent(event)) return 1;
+        usleep(1000);
+    } while ((int)(of_time_ms() - start) < timeout);
+    return 0;
+}
+static inline uint8_t SDL_EventState(uint32_t type, int state) {
+    (void)type; (void)state; return SDL_ENABLE;
+}
+static inline SDL_Keymod SDL_GetModState(void) { return __sdl_mod_state; }
+static inline void SDL_SetModState(SDL_Keymod modstate) { __sdl_mod_state = modstate; }
+static inline int SDL_SetRelativeMouseMode(SDL_bool enabled) { (void)enabled; return 0; }
+static inline uint32_t SDL_GetMouseState(int *x, int *y) {
+    if (x) *x = 0;
+    if (y) *y = 0;
+    return 0;
+}
+static inline uint32_t SDL_GetRelativeMouseState(int *x, int *y) {
+    __sdl_do_poll();
+    if (x) *x = (int)__sdl_curr_input.joy_rx;
+    if (y) *y = (int)__sdl_curr_input.joy_ry;
+    return 0;
+}
+static inline void SDL_WarpMouseInWindow(SDL_Window *window, int x, int y) {
+    (void)window; (void)x; (void)y;
+}
 
 /* ======================================================================
  * Game Controller
@@ -552,6 +1046,8 @@ static inline const char *SDL_GameControllerName(SDL_GameController *gc) {
     (void)gc; return "Analogue Pocket";
 }
 static inline void SDL_GameControllerUpdate(void) { __sdl_do_poll(); }
+static inline int SDL_GameControllerEventState(int state) { (void)state; return SDL_ENABLE; }
+static inline void SDL_GameControllerClose(SDL_GameController *gc) { (void)gc; }
 
 static inline SDL_bool SDL_GameControllerGetButton(SDL_GameController *gc,
                                                      SDL_GameControllerButton btn) {
@@ -572,6 +1068,46 @@ static inline SDL_bool SDL_GameControllerGetButton(SDL_GameController *gc,
     case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:    return (b & OF_BTN_RIGHT) != 0;
     default: return 0;
     }
+}
+
+static inline SDL_Joystick *SDL_JoystickOpen(int i) {
+    __sdl_joy.__idx = i;
+    return &__sdl_joy;
+}
+static inline void SDL_JoystickClose(SDL_Joystick *j) { (void)j; }
+static inline void SDL_JoystickUpdate(void) { __sdl_do_poll(); }
+static inline int SDL_JoystickNumButtons(SDL_Joystick *j) {
+    (void)j; return SDL_CONTROLLER_BUTTON_MAX;
+}
+static inline int SDL_JoystickNumAxes(SDL_Joystick *j) {
+    (void)j; return SDL_CONTROLLER_AXIS_MAX;
+}
+static inline int SDL_JoystickNumHats(SDL_Joystick *j) {
+    (void)j; return 1;
+}
+static inline Sint16 SDL_JoystickGetAxis(SDL_Joystick *j, int axis) {
+    (void)j;
+    switch (axis) {
+    case 0: return __sdl_curr_input.joy_lx;
+    case 1: return __sdl_curr_input.joy_ly;
+    case 2: return __sdl_curr_input.joy_rx;
+    case 3: return __sdl_curr_input.joy_ry;
+    default: return 0;
+    }
+}
+static inline uint8_t SDL_JoystickGetButton(SDL_Joystick *j, int button) {
+    (void)j;
+    return SDL_GameControllerGetButton(&__sdl_gc, (SDL_GameControllerButton)button);
+}
+static inline uint8_t SDL_JoystickGetHat(SDL_Joystick *j, int hat) {
+    (void)j; (void)hat;
+    uint8_t out = SDL_HAT_CENTERED;
+    uint32_t b = __sdl_curr_input.buttons;
+    if (b & OF_BTN_UP) out |= SDL_HAT_UP;
+    if (b & OF_BTN_DOWN) out |= SDL_HAT_DOWN;
+    if (b & OF_BTN_LEFT) out |= SDL_HAT_LEFT;
+    if (b & OF_BTN_RIGHT) out |= SDL_HAT_RIGHT;
+    return out;
 }
 
 static inline Sint16 SDL_GameControllerGetAxis(SDL_GameController *gc,
@@ -623,14 +1159,64 @@ SDL_GameControllerGetStringForButton(SDL_GameControllerButton b) {
 
 static inline uint32_t SDL_GetTicks(void) { return of_time_ms(); }
 static inline void SDL_Delay(uint32_t ms) {
-    /* musl-static path: usleep takes microseconds. */
-    extern int usleep(unsigned int);
     usleep(ms * 1000u);
 }
 
 /* ======================================================================
  * Audio
  * ====================================================================== */
+
+static inline SDL_RWops *SDL_AllocRW(void) {
+    return (SDL_RWops *)calloc(1, sizeof(SDL_RWops));
+}
+
+static inline Sint64 __sdl_mem_size(SDL_RWops *ctx) {
+    return (Sint64)(ctx->hidden.mem.stop - ctx->hidden.mem.base);
+}
+static inline Sint64 __sdl_mem_seek(SDL_RWops *ctx, Sint64 offset, int whence) {
+    uint8_t *pos = ctx->hidden.mem.here;
+    if (whence == RW_SEEK_SET) pos = ctx->hidden.mem.base + offset;
+    else if (whence == RW_SEEK_CUR) pos = ctx->hidden.mem.here + offset;
+    else if (whence == RW_SEEK_END) pos = ctx->hidden.mem.stop + offset;
+    if (pos < ctx->hidden.mem.base) pos = ctx->hidden.mem.base;
+    if (pos > ctx->hidden.mem.stop) pos = ctx->hidden.mem.stop;
+    ctx->hidden.mem.here = pos;
+    return (Sint64)(pos - ctx->hidden.mem.base);
+}
+static inline size_t __sdl_mem_read(SDL_RWops *ctx, void *ptr, size_t size, size_t maxnum) {
+    size_t bytes = size * maxnum;
+    size_t left = (size_t)(ctx->hidden.mem.stop - ctx->hidden.mem.here);
+    if (bytes > left) bytes = left;
+    if (bytes) {
+        memcpy(ptr, ctx->hidden.mem.here, bytes);
+        ctx->hidden.mem.here += bytes;
+    }
+    return size ? bytes / size : 0;
+}
+static inline size_t __sdl_mem_write(SDL_RWops *ctx, const void *ptr, size_t size, size_t num) {
+    (void)ctx; (void)ptr; (void)size; (void)num; return 0;
+}
+static inline int __sdl_mem_close(SDL_RWops *ctx) {
+    free(ctx);
+    return 0;
+}
+static inline SDL_RWops *SDL_RWFromMem(void *mem, int size) {
+    if (!mem || size < 0) return NULL;
+    SDL_RWops *rw = SDL_AllocRW();
+    if (!rw) return NULL;
+    rw->size = __sdl_mem_size;
+    rw->seek = __sdl_mem_seek;
+    rw->read = __sdl_mem_read;
+    rw->write = __sdl_mem_write;
+    rw->close = __sdl_mem_close;
+    rw->hidden.mem.base = (uint8_t *)mem;
+    rw->hidden.mem.here = (uint8_t *)mem;
+    rw->hidden.mem.stop = (uint8_t *)mem + size;
+    return rw;
+}
+static inline void SDL_FreeRW(SDL_RWops *rw) {
+    if (rw) free(rw);
+}
 
 static inline SDL_AudioDeviceID SDL_OpenAudioDevice(const char *device,
         int iscapture, const SDL_AudioSpec *desired, SDL_AudioSpec *obtained,
@@ -677,12 +1263,63 @@ static inline int SDL_QueueAudio(SDL_AudioDeviceID d, const void *data, uint32_t
     return 0;
 }
 
-static inline SDL_AudioSpec *SDL_LoadWAV_RW(void *src, int freesrc,
+static inline SDL_AudioSpec *__sdl_load_wav_from_memory(const uint8_t *data, uint32_t size,
                                              SDL_AudioSpec *spec,
                                              uint8_t **audio_buf,
                                              uint32_t *audio_len) {
-    (void)src; (void)freesrc; (void)spec;
-    *audio_buf = 0; *audio_len = 0; return 0;
+    of_codec_result_t result;
+    if (!data || !spec || !audio_buf || !audio_len ||
+        of_codec_parse_wav(data, size, &result) < 0) {
+        return NULL;
+    }
+    spec->freq = (int)result.sample_rate;
+    spec->format = (result.bits_per_sample == 16) ? AUDIO_S16SYS : AUDIO_U8;
+    spec->channels = result.channels;
+    spec->silence = 0;
+    spec->samples = 4096;
+    spec->size = result.pcm_len;
+    spec->callback = 0;
+    spec->userdata = 0;
+    uint8_t *pcm = (uint8_t *)malloc(result.pcm_len);
+    if (!pcm) return NULL;
+    memcpy(pcm, result.pcm, result.pcm_len);
+    *audio_buf = pcm;
+    *audio_len = result.pcm_len;
+    return spec;
+}
+
+static inline SDL_AudioSpec *SDL_LoadWAV_RW(SDL_RWops *src, int freesrc,
+                                             SDL_AudioSpec *spec,
+                                             uint8_t **audio_buf,
+                                             uint32_t *audio_len) {
+    if (audio_buf) *audio_buf = 0;
+    if (audio_len) *audio_len = 0;
+    if (!src) return NULL;
+
+    Sint64 size64 = src->size ? src->size(src) : -1;
+    if (size64 < 0) {
+        Sint64 here = src->seek ? src->seek(src, 0, RW_SEEK_CUR) : 0;
+        Sint64 end = src->seek ? src->seek(src, 0, RW_SEEK_END) : 0;
+        if (src->seek) src->seek(src, here, RW_SEEK_SET);
+        size64 = end;
+    }
+    if (size64 <= 0 || size64 > 4 * 1024 * 1024) {
+        if (freesrc && src->close) src->close(src);
+        return NULL;
+    }
+    uint8_t *data = (uint8_t *)malloc((size_t)size64);
+    if (!data) {
+        if (freesrc && src->close) src->close(src);
+        return NULL;
+    }
+    if (src->seek) src->seek(src, 0, RW_SEEK_SET);
+    size_t got = src->read ? src->read(src, data, 1, (size_t)size64) : 0;
+    SDL_AudioSpec *ret = got == (size_t)size64
+        ? __sdl_load_wav_from_memory(data, (uint32_t)size64, spec, audio_buf, audio_len)
+        : NULL;
+    free(data);
+    if (freesrc && src->close) src->close(src);
+    return ret;
 }
 
 static inline SDL_AudioSpec *SDL_LoadWAV(const char *file, SDL_AudioSpec *spec,
@@ -698,22 +1335,32 @@ static inline SDL_AudioSpec *SDL_LoadWAV(const char *file, SDL_AudioSpec *spec,
     if (!data) { fclose(f); return 0; }
     fread(data, 1, (size_t)size, f);
     fclose(f);
-    of_codec_result_t result;
-    if (of_codec_parse_wav(data, (uint32_t)size, &result) < 0) { free(data); return 0; }
-    spec->freq = (int)result.sample_rate;
-    spec->format = (result.bits_per_sample == 16) ? AUDIO_S16SYS : AUDIO_U8;
-    spec->channels = result.channels;
-    spec->silence = 0; spec->samples = 4096;
-    spec->size = result.pcm_len; spec->callback = 0; spec->userdata = 0;
-    uint8_t *pcm = (uint8_t *)malloc(result.pcm_len);
-    if (!pcm) { free(data); return 0; }
-    memcpy(pcm, result.pcm, result.pcm_len);
+    SDL_AudioSpec *ret = __sdl_load_wav_from_memory(data, (uint32_t)size, spec, audio_buf, audio_len);
     free(data);
-    *audio_buf = pcm; *audio_len = result.pcm_len;
-    return spec;
+    return ret;
 }
 
 static inline void SDL_FreeWAV(uint8_t *buf) { free(buf); }
+
+static inline int SDL_BuildAudioCVT(SDL_AudioCVT *cvt, uint16_t src_format,
+                                    uint8_t src_channels, int src_rate,
+                                    uint16_t dst_format, uint8_t dst_channels,
+                                    int dst_rate) {
+    if (!cvt) return -1;
+    memset(cvt, 0, sizeof(*cvt));
+    cvt->src_format = src_format;
+    cvt->dst_format = dst_format;
+    cvt->needed = (src_format != dst_format || src_channels != dst_channels || src_rate != dst_rate);
+    cvt->len_mult = 1;
+    cvt->len_ratio = 1.0;
+    cvt->rate_incr = 1.0;
+    return 0;
+}
+static inline int SDL_ConvertAudio(SDL_AudioCVT *cvt) {
+    if (!cvt) return -1;
+    cvt->len_cvt = cvt->len;
+    return 0;
+}
 
 static inline void SDL_MixAudioFormat(uint8_t *dst, const uint8_t *src,
                                        uint16_t fmt, uint32_t len, int vol) {
@@ -756,6 +1403,9 @@ static inline void SDL_SetWindowTitle(SDL_Window *w, const char *t) { (void)w;(v
 #define SDLK_RIGHT   SDL_SCANCODE_RIGHT
 #define SDLK_UP      SDL_SCANCODE_UP
 #define SDLK_DOWN    SDL_SCANCODE_DOWN
+#define SDLK_SCROLLLOCK SDL_SCANCODE_SCROLLLOCK
+#define SDLK_SCROLLOCK  SDL_SCANCODE_SCROLLLOCK
+#define SDLK_BACKQUOTE  SDL_SCANCODE_GRAVE
 #define SDLK_5       SDL_SCANCODE_5
 #define SDLK_a       SDL_SCANCODE_A
 #define SDLK_b       SDL_SCANCODE_B

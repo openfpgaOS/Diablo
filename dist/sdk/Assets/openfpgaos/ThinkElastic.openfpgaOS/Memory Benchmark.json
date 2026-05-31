@@ -12,6 +12,10 @@
             },
             {
                 "id": 2,
+                "filename": "memdemo.ini"
+            },
+            {
+                "id": 3,
                 "filename": "memdemo.elf"
             }
         ]

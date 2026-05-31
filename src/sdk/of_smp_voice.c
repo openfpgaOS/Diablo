@@ -90,7 +90,6 @@ void smp_voice_tick_get_stats(smp_tick_stats_t *out)
     out->pump_interval_min_us  = stat_pump_interval_min_us;
     out->pump_burst_count      = stat_pump_burst_count;
     out->pump_budget_exceeded  = stat_pump_budget_exceeded;
-    out->cutoff_delta_max      = 0;
 }
 
 void smp_voice_tick_reset_stats(void)
@@ -507,8 +506,7 @@ static void compute_vol_lr(smp_voice_t *v, int *out_l, int *out_r)
 
     /* Design-doc compose: VOICE_BASE_VOL × RAMP0_LEVEL × CH_VOL × CH_EXPR × MASTER.
      * voice_base_vol (0..255) = (vel_scale × initial_attn_scale) >> 8, baked at
-     * note-on so this function does one less multiply per tick AND matches the
-     * AWE fabric's compose arithmetic verbatim (Phase 3 bit-identical). */
+     * note-on so this function does one less multiply per tick. */
     int32_t vol = env_vol;
     vol = (vol * v->voice_base_vol) >> 8;
     vol = (vol * ch_vol_combined[ch]) >> 7;
@@ -602,14 +600,6 @@ static void channel_recompute_cached(int ch)
 }
 
 /* ------------------------------------------------------------------ */
-/* AWE backend retired — preserve ABI stubs for apps that still call  */
-/* smp_voice_enable_awe_backend / smp_voice_awe_backend_enabled.      */
-/* ------------------------------------------------------------------ */
-
-void smp_voice_enable_awe_backend(int on)       { (void)on; }
-int  smp_voice_awe_backend_enabled(void)        { return 0; }
-
-/* ------------------------------------------------------------------ */
 /* Public API                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -686,8 +676,7 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
 
     /* Pre-bake voice_base_vol = (velocity_gain × initial_attn_scale) >> 8.
      * One u8 field now replaces the two multiplies the old compute_vol_lr
-     * did per tick, and matches the awe_voice_t.voice_base_vol the AWE
-     * fabric reads from voice-state RAM (Phase 3 onward). */
+     * did per tick. */
     {
         int vel_scale = midi_velocity_to_gain(velocity);
         int attn_scale = zone ? zone->initial_attn_scale : 255;
@@ -709,11 +698,8 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
     uint32_t pitch_mult = smp_cents_to_multiplier(total_cents);
     v->base_rate_fp16 = (uint32_t)(((uint64_t)base_fp16 * pitch_mult) >> 16);
 
-    /* Compute sample address.
-     * sample_base points to start of sample blob in CRAM1.
-     * sample_offset is bytes from blob start.
-     * CRAM1 uses word addressing but samples are 16-bit, so
-     * the word address = base + offset/2. */
+    /* Compute sample address. sample_base points to the start of the
+     * SDRAM sample blob and sample_offset is in bytes from that base. */
     const uint8_t *sample_ptr = (const uint8_t *)sample_base
                               + zone->sample_offset;
 

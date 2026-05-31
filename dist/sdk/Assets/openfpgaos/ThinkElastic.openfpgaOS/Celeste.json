@@ -12,10 +12,14 @@
             },
             {
                 "id": 2,
+                "filename": "celeste.ini"
+            },
+            {
+                "id": 3,
                 "filename": "celeste.elf"
             },
             {
-                "id": 4,
+                "id": 5,
                 "filename": "celeste-sfx.bin"
             },
             {

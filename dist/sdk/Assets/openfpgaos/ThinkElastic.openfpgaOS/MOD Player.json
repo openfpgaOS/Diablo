@@ -12,14 +12,18 @@
             },
             {
                 "id": 2,
-                "filename": "moddemo.elf"
+                "filename": "moddemo.ini"
             },
             {
                 "id": 3,
-                "filename": "spacermx.mod"
+                "filename": "moddemo.elf"
             },
             {
                 "id": 4,
+                "filename": "spacermx.mod"
+            },
+            {
+                "id": 5,
                 "filename": "popcorn.mod"
             },
             {

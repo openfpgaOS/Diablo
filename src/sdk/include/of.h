@@ -30,7 +30,7 @@
  * Audio:    48 kHz PCM FIFO + 32-voice mixer; sample-based
  *           MIDI synth (SF2 → .ofsf banks)
  * Input:    2 controllers, d-pad + ABXY + L/R + sticks + triggers
- * Memory:   64 MB SDRAM, 16 MB CRAM0, 16 MB CRAM1, 256 KB SRAM
+ * Memory:   64 MB SDRAM, 16 MB CRAM0
  */
 
 #ifndef OF_H
@@ -61,7 +61,6 @@ extern "C" {
 #include "of_net.h"
 #include "of_analogizer.h"
 #include "of_terminal.h"
-#include "of_tile.h"
 #include "of_cache.h"
 #include "of_interact.h"
 #include "of_mixer.h"
@@ -71,6 +70,7 @@ extern "C" {
 #include "of_midi.h"
 #include "of_caps.h"
 #include "of_services.h"
+#include "of_config.h"
 /* Note: of_gpu.h is intentionally NOT included here -- it has per-app
  * static state (ring buffer pointers) and must be included from exactly
  * one TU. Standard C library functions come from upstream musl headers

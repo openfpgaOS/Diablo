@@ -12,10 +12,14 @@
             },
             {
                 "id": 2,
+                "filename": "testdemo.ini"
+            },
+            {
+                "id": 3,
                 "filename": "testdemo.elf"
             },
             {
-                "id": 4,
+                "id": 7,
                 "filename": "bank.ofsf"
             },
             {

@@ -12,10 +12,14 @@
             },
             {
                 "id": 2,
-                "filename": "fbdemo.elf"
+                "filename": "fbdemo.ini"
             },
             {
                 "id": 3,
+                "filename": "fbdemo.elf"
+            },
+            {
+                "id": 4,
                 "filename": "ofos.png"
             },
             {

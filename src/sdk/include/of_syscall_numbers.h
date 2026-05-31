@@ -64,8 +64,7 @@ extern "C" {
 #define OF_EID_ANALOGIZER   (OF_EID_BASE_VALUE + 0x04)
 #define OF_EID_NET          (OF_EID_BASE_VALUE + 0x05)
 #define OF_EID_TIMER        (OF_EID_BASE_VALUE + 0x06)
-#define OF_EID_TILE         (OF_EID_BASE_VALUE + 0x07)
-#define OF_EID_SPRITE       (OF_EID_BASE_VALUE + 0x08)
+/* 0x07/0x08 retired (tile/sprite engine) */
 #define OF_EID_MEMORY       (OF_EID_BASE_VALUE + 0x09)
 #define OF_EID_MIXER        (OF_EID_BASE_VALUE + 0x0A)
 #define OF_EID_CODEC        (OF_EID_BASE_VALUE + 0x0B)
@@ -102,6 +101,12 @@ enum of_video_fid {
     OF_VIDEO_FID_SET_PALETTE_VGA4    = 10,
     OF_VIDEO_FID_VSYNC               = 11,
     OF_VIDEO_FID_SET_VSYNC_CALLBACK  = 12,
+    OF_VIDEO_FID_SET_MODE            = 13,
+    OF_VIDEO_FID_GET_MODE            = 14,
+    OF_VIDEO_FID_GET_MODE_COUNT      = 15,
+    OF_VIDEO_FID_GET_MODE_INFO       = 16,
+    OF_VIDEO_FID_GET_CAPS            = 17,
+    OF_VIDEO_FID_CHECK_MODE          = 18,
 };
 
 /* -- OF_EID_AUDIO -- */
@@ -149,25 +154,6 @@ enum of_timer_fid {
     OF_TIMER_FID_GET_US       = 2,
     OF_TIMER_FID_GET_MS       = 3,
     OF_TIMER_FID_DELAY_US     = 4,
-};
-
-/* -- OF_EID_TILE -- */
-enum of_tile_fid {
-    OF_TILE_FID_ENABLE   = 0,
-    OF_TILE_FID_SCROLL   = 1,
-    OF_TILE_FID_SET      = 2,
-    OF_TILE_FID_LOAD_MAP = 3,
-    OF_TILE_FID_LOAD_CHR = 4,
-};
-
-/* -- OF_EID_SPRITE -- */
-enum of_sprite_fid {
-    OF_SPRITE_FID_ENABLE   = 0,
-    OF_SPRITE_FID_SET      = 1,
-    OF_SPRITE_FID_MOVE     = 2,
-    OF_SPRITE_FID_LOAD_CHR = 3,
-    OF_SPRITE_FID_HIDE     = 4,
-    OF_SPRITE_FID_HIDE_ALL = 5,
 };
 
 /* -- OF_EID_MEMORY -- */

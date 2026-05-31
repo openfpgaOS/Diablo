@@ -12,6 +12,10 @@
             },
             {
                 "id": 2,
+                "filename": "triplebuf.ini"
+            },
+            {
+                "id": 3,
                 "filename": "triplebuf.elf"
             }
         ]

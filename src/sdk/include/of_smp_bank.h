@@ -2,8 +2,8 @@
  * of_smp_bank.h -- On-device runtime bank format (.ofsf) for SF2
  *                  sample-based MIDI synthesis.
  *
- * A .ofsf file is a flat, pre-resolved binary loaded directly into
- * CRAM1 with no on-device parsing.  All SF2 generators are baked into
+ * A .ofsf file is a flat, pre-resolved binary loaded into SDRAM with
+ * no on-device parsing.  All SF2 generators are baked into
  * per-zone fields by the offline converter (tools/sf2_to_ofsf.c).
  *
  * v3 (current): timecents, centibels, and LFO-cents are pre-converted
