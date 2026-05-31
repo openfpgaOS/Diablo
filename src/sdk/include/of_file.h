@@ -12,6 +12,7 @@
 #define OF_FILE_H
 
 #include <stdint.h>
+#include <stddef.h>  /* offsetof, for the service-table index guard */
 
 /* Standard file I/O is via POSIX (fopen/fread/fwrite/fclose).
  * The of_file_* helpers below are advanced async DMA reads only. */
@@ -107,6 +108,27 @@ static inline int of_file_async_poll(void) {
 /* Check if an async read is in flight. */
 static inline int of_file_async_busy(void) {
     return of_sbi_ret_int(of_ecall0(OF_EID_FILE, OF_FILE_FID_ASYNC_BUSY));
+}
+
+/* Index of a service-table function pointer (relative to the first entry),
+ * matching the kernel's count = (sizeof(table) - header)/sizeof(void*). Used
+ * to gate a call on OF_SVC->count for forward/backward ABI compatibility. */
+#ifndef OF_FILE_SVC_INDEX
+#define OF_FILE_SVC_INDEX(field) \
+    ((uint32_t)((offsetof(struct of_services_table, field) - \
+                 offsetof(struct of_services_table, video_init)) / sizeof(void *)))
+#endif
+
+/* Register a hook invoked while a BLOCKING file read waits on its DMA, so the
+ * app can keep the audio ring fed from already-decoded data and music does not
+ * stall during SD access. The hook MUST NOT itself issue a blocking file read
+ * (kernel suppresses nested invocation). Pass NULL to clear. No-op on an older
+ * OS that predates this service-table entry. */
+static inline void of_file_set_idle_hook(void (*hook)(void)) {
+    if (OF_SVC->count > OF_FILE_SVC_INDEX(file_set_idle_hook) &&
+        OF_SVC->file_set_idle_hook) {
+        OF_SVC->file_set_idle_hook(hook);
+    }
 }
 
 #endif /* OF_PC */

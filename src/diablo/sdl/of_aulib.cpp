@@ -30,6 +30,8 @@
 /* Forward declaration; definition is further down once the static helpers
  * it uses (audio_lock, g_voice_open, OF_OUT_RATE) are in scope. */
 extern "C" void of_aulib_ensure_hw_mixer_inited(void);
+/* OS file-read idle hook; defined after the pump, registered in init(). */
+extern "C" void of_aulib_idle_pump(void);
 
 #define DR_WAV_IMPLEMENTATION
 #define DR_WAV_NO_STDIO
@@ -70,6 +72,11 @@ static int  g_ring_capacity = OF_AUDIO_FIFO;
 static int  g_underrun_reset_free = OF_AUDIO_FIFO;
 static bool g_output_suspended = false;
 static unsigned g_output_suspend_depth = 0;
+/* Set while the OS file-read idle hook (of_aulib_idle_pump) is feeding the ring
+ * from inside a blocking SD read: tells mixInto/nextFrame to mix ONLY from each
+ * stream's already-decoded readahead and never touch the SD. An empty readahead
+ * then becomes silence with the stream kept alive, not a false end-of-stream. */
+static volatile bool g_audio_no_sd = false;
 static bool g_hw_mixer_inited = false;
 static volatile uint32_t g_silence_idle_ticks = 0;
 static const uint32_t SILENCE_STALE_TICKS     = 4; /* @60 Hz -> ~67 ms, > 42 ms ring */
@@ -454,7 +461,7 @@ bool Stream::nextFrame(float out[2])
 		 * storage-backed MPQ/decoder read while the pump holds the audio lock
 		 * (see of_aulib_pump). In practice play() fully primes the buffer and
 		 * maintainReadAhead() keeps it topped up, so this rarely fires. */
-		if (readAheadCount_ == 0)
+		if (readAheadCount_ == 0 && !g_audio_no_sd)
 			fillReadAhead(OF_READAHEAD_REFILL_FRAMES);
 #endif
 		/* With OF_AULIB_DEFER_DECODE, never decode here: just pop. An empty
@@ -581,10 +588,32 @@ bool Stream::mixInto(int32_t *accum, int frames)
 	const float lscale = volume_ * leftGain_ * 16384.0F;
 	const float rscale = volume_ * rightGain_ * 16384.0F;
 
+	/* Keep srcPos_ from outgrowing the float mantissa. srcPos_ is the absolute
+	 * source-frame position; left unbounded it passes ~2^24 after a few minutes
+	 * of continuous music, where srcPos_ += step loses precision so the position
+	 * advances too slowly (or stalls) and the music progressively slows/drags,
+	 * then snaps back when the track resets. Fold the whole part back out each
+	 * block and subtract the same count from consumed_, preserving the
+	 * consumed_ <= (long)srcPos_ relationship (and thus the exact decode/output
+	 * sequence) -- consumed_ is a pure local resampler counter, used nowhere
+	 * else. Clamp to consumed_ so a deferred-decode starvation state (srcPos_
+	 * momentarily ahead of consumed_) can never drive consumed_ negative. */
+	if (srcPos_ >= 1.0F) {
+		long whole = (long)srcPos_;
+		if (whole > consumed_) whole = consumed_;
+		srcPos_ -= (float)whole;
+		consumed_ -= whole;
+	}
+
 	for (int i = 0; i < frames; ++i) {
 		long target = (long)srcPos_;
 		while (consumed_ <= target) {
 			if (!nextFrame(cur_)) {
+				/* Idle hook fired inside a blocking SD read: no decode ran,
+				 * so an empty readahead means "no data right now", NOT EOS --
+				 * leave the pump's pre-zeroed silence and keep the stream. */
+				if (g_audio_no_sd && readAheadCapacity_ > 0)
+					return true;
 #ifdef OF_AULIB_DEFER_DECODE
 				/* Readahead (music) path decodes only in maintainReadAhead(),
 				 * outside the audio lock. An empty readahead while playing_ is
@@ -654,6 +683,11 @@ bool init(int freq, SDL_AudioFormat format, int channels, int frameSize, const s
 	g_output_suspend_depth = 0;
 	g_silence_idle_ticks = 0;
 	g_inited = true;
+	/* Feed the music ring during blocking SD reads: the OS calls this hook from
+	 * its file-read DMA wait, so music does not stall while the main thread is
+	 * blocked loading assets. of_aulib_idle_pump mixes only from the pre-decoded
+	 * readahead (no SD); it is a no-op on an OS that predates the hook entry. */
+	of_file_set_idle_hook(of_aulib_idle_pump);
 	/* IRQ-side silence remains disabled. ScummVM showed of_audio_write()
 	 * from the timer ISR can produce audible modulation, so Diablo keeps
 	 * all PCM writes on the main thread. */
@@ -803,4 +837,44 @@ extern "C" void of_aulib_pump(void)
 	auto &v = ActiveStreams();
 	for (Aulib::Stream *s : v)
 		s->maintainReadAhead();
+}
+
+/* OS file-read idle hook: invoked from the blocking file-read DMA wait
+ * (registered via of_file_set_idle_hook). Tops up the HW music ring from each
+ * stream's ALREADY-DECODED readahead (g_audio_no_sd => mixInto never touches
+ * the SD), so music keeps playing while the main thread is blocked on an SD
+ * read. Runs in the file-wait trap context, so it stays ecall-free: only
+ * of_audio_free/of_audio_write (pure OF_SVC MMIO) and float mixing -- no SD, no
+ * logging, no ring reset/init. try_lock cleanly skips when the main pump owns
+ * the device, including the re-entrant case where this hook fires from inside
+ * the pump's own decode read. Streams are never erased here (EOS detection and
+ * removal stay with the main pump, which is the only path that decodes). */
+extern "C" void of_aulib_idle_pump(void)
+{
+	if (!g_inited || g_output_suspended || !g_voice_open) return;
+	if (!audio_try_lock()) return;
+	if (g_voice_open && !g_output_suspended && !ActiveStreams().empty()) {
+		static int32_t acc[OF_MIX_BLOCK * 2];
+		static int16_t out[OF_MIX_BLOCK * 2];
+		g_audio_no_sd = true;
+		int freePairs = of_audio_free();
+		while (freePairs > 0) {
+			int n = freePairs < OF_MIX_BLOCK ? freePairs : OF_MIX_BLOCK;
+			std::memset(acc, 0, sizeof(int32_t) * n * 2);
+			auto &v2 = ActiveStreams();
+			for (size_t i = 0; i < v2.size(); ++i)
+				v2[i]->mixInto(acc, n);
+			for (int j = 0; j < n * 2; ++j) {
+				int32_t x = acc[j];
+				if (x > 32767) x = 32767; else if (x < -32768) x = -32768;
+				out[j] = (int16_t)x;
+			}
+			int wrote = of_audio_write(out, n);
+			if (wrote <= 0) break;
+			g_voice_has_written = true;
+			freePairs -= wrote;
+		}
+		g_audio_no_sd = false;
+	}
+	audio_unlock();
 }

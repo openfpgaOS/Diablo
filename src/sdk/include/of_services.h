@@ -311,6 +311,15 @@ struct of_services_table {
     int       (*config_next)(const char *section, uint32_t *cursor,
                              char *key_out, uint32_t key_len,
                              char *value_out, uint32_t value_len);
+
+    /* -- File I/O idle hook (append-only) --
+     * Hook invoked repeatedly from the blocking file-read DMA wait
+     * (file_wait_complete) so the app can keep latency-critical work running
+     * while a synchronous SD read is in flight -- e.g. feeding the audio ring
+     * from an already-decoded buffer so music does not stall during SD access.
+     * The hook MUST NOT issue a blocking file read (nested invocation is
+     * suppressed by the kernel). Pass NULL to clear. */
+    void      (*file_set_idle_hook)(void (*hook)(void));
 };
 
 #ifndef OF_PC
