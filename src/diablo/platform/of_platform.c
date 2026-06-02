@@ -42,6 +42,17 @@ void of_platform_init(void)
 		return;
 	g_done = 1;
 
+	/* Switch the display to the 640x480 app framebuffer immediately — this runs
+	 * from the first SDL_GetBasePath()/SDL_Init() call, before DevilutionX loads
+	 * its archives, so the boot terminal/console isn't shown during startup. The
+	 * game's own SDL video init re-runs this harmlessly (idempotent). On a crash
+	 * the OS trap handler flips the display back to the terminal. */
+	{
+		of_video_mode_t want = { 640, 480, 0, OF_VIDEO_MODE_8BIT, 0 };
+		of_video_init();
+		of_video_set_mode(&want);
+	}
+
 	/* Read-only data slots. The kernel auto-discovers APF filenames at
 	 * boot; registering here makes fopen() resolution explicit and
 	 * order-independent. */

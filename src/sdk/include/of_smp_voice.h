@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * of_smp_voice.h -- Software voice engine for sample-based MIDI synthesis.
  *
@@ -57,6 +63,12 @@ typedef struct {
     lfo_state_t mod_lfo;
     lfo_state_t vib_lfo;
     uint32_t base_rate_fp16; /* base 16.16 playback rate (no bend/LFO) */
+    /* Cached L/R pan multipliers (Q0.PAN_SHIFT).  Recomputed at note-on and
+     * when CC10 changes for this channel, so the per-tick volume path is two
+     * multiplies + shift with no divide.  One side is always full-scale
+     * (1<<PAN_SHIFT); the other carries the equal-volume pan attenuation. */
+    int32_t pan_mul_l;
+    int32_t pan_mul_r;
     uint32_t age;
     /* Countdown of smp_voice_tick calls until the underlying non-looping
      * sample has played to its natural end.  0 = not tracked (looping

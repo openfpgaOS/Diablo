@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * of_smp_tables.c -- precomputed tables and SF2 unit-conversion helpers.
  *
@@ -184,6 +190,20 @@ const uint32_t smp_cents_to_mult[1200] = {
  *   tc <= -32768: instantaneous (0 ticks)
  *   tc >= 8000:   clamp to ~110 seconds (110000 ticks)
  */
+
+/* Fold a signed cents value into whole octaves plus a remainder in
+ * [0,1199], using C integer-division truncation semantics.  Shared by the
+ * timecents / cents-multiplier / centibel converters below so the runtime
+ * and the offline OFSF baker fold identically (bit-for-bit). */
+static inline int smp_cents_fold(int32_t cents, int *octaves_out)
+{
+    int octaves = (int)(cents / 1200);
+    int rem = (int)(cents - octaves * 1200);
+    if (rem < 0) { rem += 1200; octaves--; }
+    *octaves_out = octaves;
+    return rem;
+}
+
 int32_t smp_timecents_to_ticks(int16_t tc)
 {
     if (tc <= -12000) return 0;      /* < 1ms, treat as instant */
@@ -191,9 +211,8 @@ int32_t smp_timecents_to_ticks(int16_t tc)
 
     /* ticks = 1000 * 2^(tc/1200)
      * = 1000 * 2^(octaves) * cents_to_mult[rem] / 65536  */
-    int octaves = tc / 1200;
-    int rem = tc - octaves * 1200;
-    if (rem < 0) { rem += 1200; octaves--; }
+    int octaves;
+    int rem = smp_cents_fold(tc, &octaves);
 
     uint32_t mult = smp_cents_to_mult[rem];
     /* base = 1000 * mult / 65536 = mult * 1000 >> 16 */
@@ -218,11 +237,10 @@ int32_t smp_timecents_to_ticks(int16_t tc)
  * engine — extracted so the offline converter can call it. */
 uint32_t smp_cents_to_multiplier(int32_t cents)
 {
-    int octaves = 0;
-    while (cents >= 1200) { cents -= 1200; octaves++; }
-    while (cents <    0)  { cents += 1200; octaves--; }
+    int octaves;
+    int rem = smp_cents_fold(cents, &octaves);
 
-    uint32_t m = smp_cents_to_mult[cents];
+    uint32_t m = smp_cents_to_mult[rem];
     if      (octaves > 0) m <<=  octaves;
     else if (octaves < 0) m >>= -octaves;
     return m;
@@ -246,9 +264,8 @@ int32_t smp_cb_to_level(int16_t cb)
     /* neg_cents = cB * 1200 / 200 * log2(10) = cB * 3.3219...
      * Use the integer factor 3322/1000 for repeatable fixed-point. */
     int32_t neg_cents = (int32_t)cb * 3322 / 1000;
-    int octaves = neg_cents / 1200;
-    int rem     = neg_cents - octaves * 1200;
-    if (rem < 0) { rem += 1200; octaves--; }
+    int octaves;
+    int rem = smp_cents_fold(neg_cents, &octaves);
 
     uint32_t mult = smp_cents_to_mult[rem];
     /* level = 0x10000 / 2^octaves / (mult/65536)

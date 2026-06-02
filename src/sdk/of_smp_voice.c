@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * of_smp_voice.c -- Sample voice engine for sample-based MIDI with
  *                   DAHDSR envelopes, dual LFOs, and pitch bend.
@@ -29,6 +35,11 @@
 
 static OF_FASTDATA smp_voice_t voices[SMP_MAX_VOICES];
 static OF_FASTDATA uint32_t    tick_counter;
+/* Count of voices currently marked STEAL_PENDING.  voice_cleanup_stolen()
+ * runs every tick; this lets it skip the full SMP_MAX_VOICES scan in the
+ * common case (nothing pending).  Only voice_force_off() sets STEAL_PENDING
+ * (and bumps this); voice_cleanup_stolen() clears them all and zeroes it. */
+static OF_FASTDATA uint8_t     steal_pending_count;
 
 /* ------------------------------------------------------------------ */
 /* Tick-cost probe (Task #10)                                         */
@@ -176,7 +187,12 @@ static int clamp_midi7(int v)
     return v;
 }
 
-static int midi_velocity_to_gain(int velocity)
+/* 128-entry velocity→gain table, baked once in smp_voice_init().  note_on
+ * runs from the MIDI ISR, so this replaces the per-note-on curve math
+ * (multiply + divide + blend) with a single BRAM read. */
+static OF_FASTDATA uint8_t vel_gain_lut[128];
+
+static int midi_velocity_gain_compute(int velocity)
 {
     int v = clamp_midi7(velocity);
     if (v <= 0) return 0;
@@ -345,11 +361,16 @@ static int voice_hw_owned_by_music(const smp_voice_t *v)
 {
     if (v->mixer_voice == OF_MIXER_HANDLE_INVALID)
         return 0;
-    if (!of_mixer_handle_active(v->mixer_voice))
-        return 0;
-
+    /* of_mixer_handle_group() validates the handle against active_shadow +
+     * generation and returns -1 for an invalid / inactive / stolen handle, so
+     * this single NON-reaping query replaces the old handle_active +
+     * handle_group pair (one mixer call per voice instead of two).  The HW
+     * voice-end queue is reaped once per tick at the top of smp_voice_tick()
+     * instead of once per voice here — see the reap there. */
     int group = of_mixer_handle_group(v->mixer_voice);
-    return group < 0 || group == OF_MIXER_GROUP_MUSIC;
+    if (group < 0)
+        return 0;
+    return group == OF_MIXER_GROUP_MUSIC;
 }
 
 static void voice_stop_hw_if_owned(smp_voice_t *v)
@@ -461,10 +482,14 @@ static void voice_force_off(int idx)
     of_mixer_set_vol_lr_h(v->mixer_voice, 0, 0);
     of_mixer_set_volume_ramp_h(v->mixer_voice, 16);
     v->active = STEAL_PENDING;
+    steal_pending_count++;
 }
 
 static void voice_cleanup_stolen(void)
 {
+    /* Common case: nothing pending — skip the full scan. */
+    if (steal_pending_count == 0)
+        return;
     for (int i = 0; i < SMP_MAX_VOICES; i++) {
         if (voices[i].active == STEAL_PENDING) {
             voice_stop_hw_if_owned(&voices[i]);
@@ -472,6 +497,7 @@ static void voice_cleanup_stolen(void)
             voices[i].mixer_voice = OF_MIXER_HANDLE_INVALID;
         }
     }
+    steal_pending_count = 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -495,6 +521,33 @@ static void kill_exclusive_class(int midi_ch, uint8_t excl_class)
 /* Volume / pan / pitch computation                                   */
 /* ------------------------------------------------------------------ */
 
+/* Q0.PAN_SHIFT fixed-point for the cached pan multipliers.  PAN_SHIFT=16
+ * keeps vol(<=255) * pan_mul(<=1<<16) well inside int32. */
+#define PAN_SHIFT 16
+
+/* Recompute a voice's cached L/R pan multipliers from its (constant) zone pan
+ * and the current channel CC10.  Called at note-on and whenever CC10 changes,
+ * so the per-tick hot path never divides.  The equal-volume law is unchanged:
+ *   pan -500: L=vol, R=0 ;  pan 0: L=R=vol ;  pan +500: L=0, R=vol
+ * One side stays full-scale; the other carries (500-|pan|)/500 as a reciprocal
+ * multiply (matches the old integer divide to within 1 LSB). */
+static void voice_recompute_pan(smp_voice_t *v)
+{
+    int zone_pan = v->zone ? v->zone->pan : 0;
+    int pan = zone_pan + ch_pan_midi[v->midi_ch];
+    if (pan < -500) pan = -500;
+    if (pan > 500)  pan = 500;
+
+    const int32_t full = (int32_t)1 << PAN_SHIFT;
+    if (pan <= 0) {
+        v->pan_mul_l = full;
+        v->pan_mul_r = (int32_t)(((int64_t)(500 + pan) << PAN_SHIFT) / 500);
+    } else {
+        v->pan_mul_l = (int32_t)(((int64_t)(500 - pan) << PAN_SHIFT) / 500);
+        v->pan_mul_r = full;
+    }
+}
+
 static void compute_vol_lr(smp_voice_t *v, int *out_l, int *out_r)
 {
     /* env_vol: Q16.16 -> 0..256 */
@@ -514,35 +567,31 @@ static void compute_vol_lr(smp_voice_t *v, int *out_l, int *out_r)
     if (vol > 255) vol = 255;
     if (vol < 0)   vol = 0;
 
-    /* Pan: zone pan + channel pan.
-     * Zone pan: -500..+500 (SF2 units, -500=full left, +500=full right)
-     * Channel CC10: 0..127 (64=center)
-     * Combined pan: -500..+500 range */
-    int zone_pan = v->zone ? v->zone->pan : 0;
-    int midi_pan = ch_pan_midi[ch];
-    int pan = zone_pan + midi_pan;
-    if (pan < -500) pan = -500;
-    if (pan > 500)  pan = 500;
-
-    /* Convert pan to L/R scaling.
-     * pan -500: L=vol, R=0
-     * pan    0: L=vol, R=vol
-     * pan +500: L=0,   R=vol */
-    if (pan <= 0) {
-        *out_l = vol;
-        *out_r = (vol * (500 + pan)) / 500;
-    } else {
-        *out_l = (vol * (500 - pan)) / 500;
-        *out_r = vol;
-    }
+    /* Pan applied via the cached per-voice multipliers (see
+     * voice_recompute_pan) — two multiplies + shift, no divide, no clamp. */
+    *out_l = (int)((vol * v->pan_mul_l) >> PAN_SHIFT);
+    *out_r = (int)((vol * v->pan_mul_r) >> PAN_SHIFT);
 }
 
 /* filter_update retired in v3 — the mixer RTL has no SVF, so the
  * cents→Q0.16 conversion + redundant-write skip + delta tracking
  * was producing zero audible effect.  Each tick was paying ~50–100
  * cycles per active voice for math whose only consumer was the
- * stub of_mixer_set_filter() in hal/mixer.c.  If SVF returns to
+ * since-removed no-op of_mixer_set_filter().  If SVF returns to
  * the RTL, reintroduce a runtime cap-gated path. */
+
+/* Apply a cents offset to a voice's base playback rate.  Shared by the fast
+ * (bend-only) and slow (LFO / mod-env) paths of compute_pitch so the clamp +
+ * multiplier lookup + Q16.16 multiply lives in exactly one place. */
+static inline uint32_t pitch_from_cents(uint32_t base_rate_fp16, int32_t cents_offset)
+{
+    if (cents_offset == 0)
+        return base_rate_fp16;
+    if (cents_offset > 12000)  cents_offset = 12000;
+    if (cents_offset < -12000) cents_offset = -12000;
+    uint32_t mult = smp_cents_to_multiplier(cents_offset);
+    return (uint32_t)(((uint64_t)base_rate_fp16 * mult) >> 16);
+}
 
 static uint32_t compute_pitch(smp_voice_t *v)
 {
@@ -556,12 +605,7 @@ static uint32_t compute_pitch(smp_voice_t *v)
     if (z->vib_lfo_to_pitch == 0 &&
         z->mod_env_to_pitch == 0 &&
         (z->mod_lfo_to_pitch == 0 || ch_mod_depth[ch] == 0)) {
-        if (cents_offset == 0)
-            return v->base_rate_fp16;
-        if (cents_offset > 12000) cents_offset = 12000;
-        if (cents_offset < -12000) cents_offset = -12000;
-        uint32_t mult = smp_cents_to_multiplier(cents_offset);
-        return (uint32_t)(((uint64_t)v->base_rate_fp16 * mult) >> 16);
+        return pitch_from_cents(v->base_rate_fp16, cents_offset);
     }
 
     /* Vibrato LFO */
@@ -584,13 +628,7 @@ static uint32_t compute_pitch(smp_voice_t *v)
         cents_offset += ((int64_t)v->mod_env.level * z->mod_env_to_pitch) >> 16;
     }
 
-    if (cents_offset == 0)
-        return v->base_rate_fp16;
-    if (cents_offset > 12000) cents_offset = 12000;
-    if (cents_offset < -12000) cents_offset = -12000;
-
-    uint32_t mult = smp_cents_to_multiplier(cents_offset);
-    return (uint32_t)(((uint64_t)v->base_rate_fp16 * mult) >> 16);
+    return pitch_from_cents(v->base_rate_fp16, cents_offset);
 }
 
 static void channel_recompute_cached(int ch)
@@ -605,6 +643,9 @@ static void channel_recompute_cached(int ch)
 
 void smp_voice_init(void)
 {
+    for (int v = 0; v < 128; v++)
+        vel_gain_lut[v] = (uint8_t)midi_velocity_gain_compute(v);
+
     for (int i = 0; i < SMP_MAX_VOICES; i++) {
         voices[i].active = 0;
         voices[i].mixer_voice = OF_MIXER_HANDLE_INVALID;
@@ -627,6 +668,7 @@ void smp_voice_init(void)
 
     master_vol = 255;
     tick_counter = 0;
+    steal_pending_count = 0;
 }
 
 int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
@@ -678,7 +720,7 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
      * One u8 field now replaces the two multiplies the old compute_vol_lr
      * did per tick. */
     {
-        int vel_scale = midi_velocity_to_gain(velocity);
+        int vel_scale = vel_gain_lut[clamp_midi7(velocity)];
         int attn_scale = zone ? zone->initial_attn_scale : 255;
         int bv = (vel_scale * attn_scale) >> 8;
         if (bv > 255) bv = 255;
@@ -754,6 +796,10 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
      * the ISR runs — otherwise the ISR writes volume 0 immediately. */
     env_advance(&v->vol_env, zone, 1);
 
+    /* Cache pan multipliers before the first compute_vol_lr (and before the
+     * ISR ticks this voice), so the hot path is divide-free from tick one. */
+    voice_recompute_pan(v);
+
     int vl, vr;
     compute_vol_lr(v, &vl, &vr);
     of_mixer_set_vol_lr_h(mhv, vl, vr);
@@ -796,6 +842,17 @@ void smp_voice_tick(void)
 #endif
 
     tick_counter++;
+
+    /* Reap the HW mixer's voice-end queue ONCE per tick.
+     * of_mixer_handle_active() runs mixer_reap_ended_pending() first — a
+     * non-destructive reap that updates active_shadow and pushes ended voices
+     * to the ended-queue WITHOUT consuming it (SFX end-polling is unaffected) —
+     * then validates the handle.  We pass an INVALID handle purely to trigger
+     * that reap; the per-voice voice_hw_owned_by_music() checks below then use
+     * the non-reaping of_mixer_handle_group(), so we no longer pay one MMIO
+     * MIX_IRQ_PENDING read per active voice per tick. */
+    (void)of_mixer_handle_active(OF_MIXER_HANDLE_INVALID);
+
     voice_cleanup_stolen();
 
     for (int i = 0; i < SMP_MAX_VOICES; i++) {
@@ -819,7 +876,7 @@ void smp_voice_tick(void)
          * can force-DONE without any audible click and reclaim the slot
          * immediately — otherwise the envelope's long SUSTAIN parks the
          * voice (especially SF2 drum zones with very long vol_sustain)
-         * and fills all 28 soft voices during dense drum tracks. */
+         * and fills all SMP_MAX_VOICES soft voices during dense drum tracks. */
         if (v->sample_ticks_remaining > 0) {
             if (--v->sample_ticks_remaining == 0) {
                 v->vol_env.stage = ENV_DONE;
@@ -838,8 +895,16 @@ void smp_voice_tick(void)
         const ofsf_zone_t *z = v->zone;
         env_advance(&v->vol_env, z, 1);
         env_advance(&v->mod_env, z, 0);
-        lfo_advance(&v->mod_lfo);
-        lfo_advance(&v->vib_lfo);
+        /* Only advance an LFO whose phase a routing target actually reads —
+         * compute_pitch is the sole consumer and gates on these same zone
+         * fields.  Most GM melodic zones and all drum zones route no LFO to
+         * pitch, so this skips both phase updates for them every tick.
+         * INVARIANT: if an amplitude- or filter-LFO consumer is ever added,
+         * widen this gate to cover its routing field too. */
+        if (z) {
+            if (z->vib_lfo_to_pitch) lfo_advance(&v->vib_lfo);
+            if (z->mod_lfo_to_pitch) lfo_advance(&v->mod_lfo);
+        }
 
         if (v->vol_env.stage == ENV_DONE) {
             voice_stop_hw_if_owned(v);
@@ -851,13 +916,28 @@ void smp_voice_tick(void)
         int vl, vr;
         compute_vol_lr(v, &vl, &vr);
         uint32_t rate = compute_pitch(v);
-        if (vl != prev_vol_l[i] || vr != prev_vol_r[i] ||
-            rate != prev_rate[i]) {
-            of_mixer_set_voice_raw_h(v->mixer_voice, rate, vl, vr);
-            /* set_voice_raw coalesces rate + vol; count each independently
-             * changed field so the stats reflect the underlying load. */
-            if (rate != prev_rate[i]) stat_rate_writes++;
-            if (vl != prev_vol_l[i] || vr != prev_vol_r[i]) stat_vol_writes++;
+        int rate_changed = (rate != prev_rate[i]);
+        int vol_changed  = (vl != prev_vol_l[i] || vr != prev_vol_r[i]);
+        if (rate_changed || vol_changed) {
+            /* This voice's handle was just validated this tick by
+             * voice_drop_if_stale() above, and smp_voice_tick() runs inside
+             * the machine-timer ISR (interrupts already masked on trap
+             * entry).  So bypass the _h API's redundant handle re-validation
+             * + IRQ save/restore: resolve the HW voice index once and issue
+             * only the field(s) that actually changed.  For a sustaining note
+             * the rate is stable while the volume envelope ramps, so RATE is
+             * usually unchanged and skipped entirely. */
+            int hw_voice = of_mixer_handle_voice(v->mixer_voice);
+            if (hw_voice >= 0) {
+                if (rate_changed) {
+                    of_mixer_set_rate_raw(hw_voice, rate);
+                    stat_rate_writes++;
+                }
+                if (vol_changed) {
+                    of_mixer_set_vol_lr(hw_voice, vl, vr);
+                    stat_vol_writes++;
+                }
+            }
             prev_vol_l[i] = vl;
             prev_vol_r[i] = vr;
             prev_rate[i] = rate;
@@ -895,7 +975,14 @@ void smp_voice_update_pan(int midi_ch, int pan)
     if (midi_ch < 0 || midi_ch > 15) return;
     pan = clamp_midi7(pan);
     ch_pan[midi_ch] = pan;
-    channel_recompute_cached(midi_ch);
+    channel_recompute_cached(midi_ch);   /* refreshes ch_pan_midi[midi_ch] */
+    /* Pan multipliers are per-voice (zone pan + channel pan); refresh every
+     * live voice on this channel so the hot path stays divide-free. */
+    for (int i = 0; i < SMP_MAX_VOICES; i++) {
+        smp_voice_t *v = &voices[i];
+        if (v->active && v->active != STEAL_PENDING && v->midi_ch == midi_ch)
+            voice_recompute_pan(v);
+    }
 }
 
 void smp_voice_update_bend(int midi_ch, int bend)

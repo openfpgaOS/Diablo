@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * of_audio.h -- Audio subsystem API for openfpgaOS
  *
@@ -19,7 +25,14 @@ extern "C" {
 #include <stdint.h>
 
 #define OF_AUDIO_RATE   48000
-#define OF_AUDIO_FIFO   1024   /* stereo pairs; matches audio_output.v dcfifo depth */
+#define OF_AUDIO_FIFO   1024   /* stereo pairs; HW dcfifo depth in audio_output.v
+                                * — NOT the SW ring size (see OF_AUDIO_RING_PAIRS) */
+
+/* SW SDRAM audio-ring capacity in stereo pairs.  This is the depth that
+ * of_audio_free() reports against, so queued-size accounting must use it
+ * (not the much smaller HW dcfifo depth).  MUST match AUDIO_RING_PAIRS in
+ * os/targets/pocket/audio.c. */
+#define OF_AUDIO_RING_PAIRS  16384
 
 #ifndef OF_PC
 

@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * of_sdl2.c -- the single implementation TU for the openfpgaOS SDL2
  * compatibility layer (declared in <SDL2/SDL.h> and <SDL2/SDL_mixer.h>).
@@ -1277,7 +1283,7 @@ int SDL_QueueAudio(SDL_AudioDeviceID d, const void *data, Uint32 len) {
 	of_audio_write((const int16_t *)data, (int)(len / 4));
 	return 0;
 }
-Uint32 SDL_GetQueuedAudioSize(SDL_AudioDeviceID d){ (void)d; int f = of_audio_free(); int q = OF_AUDIO_FIFO - (f>0?f:0); return (Uint32)(q>0?q:0) * 4u; }
+Uint32 SDL_GetQueuedAudioSize(SDL_AudioDeviceID d){ (void)d; int f = of_audio_free(); int q = OF_AUDIO_RING_PAIRS - (f>0?f:0); return (Uint32)(q>0?q:0) * 4u; }
 void SDL_ClearQueuedAudio(SDL_AudioDeviceID d){ (void)d; }
 
 static SDL_AudioSpec *load_wav_mem(const Uint8 *data, Uint32 size, SDL_AudioSpec *spec, Uint8 **buf, Uint32 *len) {

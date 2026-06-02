@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * of_midi.h -- Standard MIDI File playback for openfpgaOS
  *
@@ -16,13 +22,15 @@
  *   of_midi_init();
  *   of_midi_play(midi_data, midi_len, 1);  // loop
  *   while (1) {
- *       // ... game logic ...  (pump runs in timer ISR at 1 kHz)
+ *       // ... game logic ...  (pump runs from the timer ISR)
  *   }
  *
  * Note: of_midi_play() installs of_midi_pump as the machine-timer ISR
- * callback at 1 kHz, so the mixer is driven independently of the main
- * thread.  Do NOT call of_midi_pump() from the main loop while playback
- * is active — the ISR owns it and concurrent calls will race.
+ * callback.  The callback WAKES at 50 Hz and, on each wake, advances the
+ * synth envelopes at their baked 1 kHz rate by firing N = elapsed-ms catch-up
+ * ticks (of_smp_tables.c bakes envelopes at 1 kHz).  So the mixer is driven
+ * independently of the main thread.  Do NOT call of_midi_pump() from the main
+ * loop while playback is active — the ISR owns it and concurrent calls race.
  */
 
 #ifndef OF_MIDI_H
@@ -60,9 +68,10 @@ void of_midi_pause(void);
 void of_midi_resume(void);
 
 /* Process pending MIDI events and advance envelopes.
- * Installed as the machine-timer ISR callback by of_midi_play() and
- * called internally at 1 kHz.  Do NOT invoke from the main loop while
- * playback is active. */
+ * Installed as the machine-timer ISR callback by of_midi_play(); the
+ * callback wakes at 50 Hz and advances envelopes at their baked 1 kHz rate
+ * via an elapsed-time catch-up loop.  Do NOT invoke from the main loop
+ * while playback is active. */
 void of_midi_pump(void);
 
 /* Query state */

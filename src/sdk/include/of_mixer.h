@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * of_mixer.h -- PCM Mixer API for openfpgaOS
  *
@@ -265,9 +271,9 @@ static inline uint32_t of_mixer_poll_ended_h(of_mixer_handle_t *out_handles,
     return 0;
 }
 
-/* Legacy allocator.  Prefer malloc/free for new code; the mixer can DMA
- * from any SDRAM buffer.  This service remains for older apps that use
- * of_mixer_free_samples() as a bulk reset. */
+/* DEPRECATED legacy allocator.  New code MUST use malloc/free — the mixer
+ * can DMA from any SDRAM buffer.  These remain only for older apps that use
+ * of_mixer_free_samples() as a bulk reset; do not use in new code. */
 static inline void *of_mixer_alloc_samples(size_t size) {
     return OF_SVC->mixer_alloc_samples((uint32_t)size);
 }
@@ -303,17 +309,11 @@ static inline void of_mixer_set_master_volume(int volume) {
     OF_SVC->mixer_set_master_volume(volume);
 }
 
-/* Retired per-voice filter surface.  The current mixer has no SVF, so this
- * is a compatibility no-op kept for older apps. */
-static inline void of_mixer_set_filter(int voice, int cutoff_q016, int q, int enable) {
-    OF_SVC->mixer_set_filter(voice, cutoff_q016, q, enable);
-}
-
-static inline void of_mixer_set_filter_h(of_mixer_handle_t handle,
-                                         int cutoff_q016, int q, int enable) {
-    if (OF_SVC_HAS_FIELD(mixer_set_filter_h) && OF_SVC->mixer_set_filter_h)
-        OF_SVC->mixer_set_filter_h(handle, cutoff_q016, q, enable);
-}
+/* The retired per-voice SVF filter API (of_mixer_set_filter/_h) was removed:
+ * the mixer HW has no state-variable filter, so the calls were pure no-ops
+ * with no callers.  The of_services_table mixer_set_filter / mixer_set_filter_h
+ * slots were deleted too, so this is a services-ABI revision — all app
+ * binaries must be rebuilt against this header. */
 
 /* Group-aware atomic alloc-and-tag.  MUSIC scans low→high, SFX (and
  * untagged/other groups) scans high→low so the two groups land at
@@ -432,9 +432,6 @@ static inline void of_mixer_set_group_volume(int group, int volume) {
 static inline void of_mixer_set_master_volume(int volume) {
     (void)volume;
 }
-static inline void of_mixer_set_filter(int voice, int cutoff_q016, int q, int enable) {
-    (void)voice; (void)cutoff_q016; (void)q; (void)enable;
-}
 static inline void of_mixer_retrigger(int voice, const uint8_t *pcm_s16,
                                       uint32_t sample_count, uint32_t sample_rate,
                                       int volume) {
@@ -525,10 +522,6 @@ static inline void of_mixer_set_voice_raw_h(of_mixer_handle_t handle,
 }
 static inline void of_mixer_set_volume_ramp_h(of_mixer_handle_t handle, int rate) {
     (void)handle; (void)rate;
-}
-static inline void of_mixer_set_filter_h(of_mixer_handle_t handle,
-                                         int cutoff_q016, int q, int enable) {
-    (void)handle; (void)cutoff_q016; (void)q; (void)enable;
 }
 static inline uint32_t of_mixer_poll_ended_h(of_mixer_handle_t *out_handles,
                                              uint32_t max_handles) {
