@@ -78,13 +78,21 @@ void of_platform_init(void)
 	 * apply on the current OS. DevilutionX hits these slots via
 	 * `MpqWriter`/`pfile_read_player_from_save` (`single_N.sv`).
 	 *
-	 * Config slot 9 (`diablo.ini`) is still off pending separate
-	 * confirmation that the pre-save voice handles writes the same way. */
+	 * Config slot 9 (`diablo.ini`) rides the SAME mechanism: save.c's
+	 * nvslot_map sends ids 8/9 to the CRAM0 pre-save window, and sys_close
+	 * treats every nvslot fd identically (datatable size commit only, no
+	 * synchronous bridge write), so the old first-write reset class cannot
+	 * fire. The instance JSON previously bound diablo.ini to slot 2 (the
+	 * read-only OS Config slot) -- that was the "Permission denied" on
+	 * SaveIni; it now binds slot 9. Settings persist when the Pocket's
+	 * native save-on-exit writeback runs (menu exit / sleep). */
 	for (int i = 0; i < 10; i++) {
 		char name[24];
 		snprintf(name, sizeof name, "single_%d.sv", i);
 		of_file_slot_register(10 + i, name);
 	}
+	of_file_slot_register(9, "diablo.ini");
+	of_file_slot_register(9, "hellfire.ini"); /* Hellfire instance binds this name */
 
 	/* The MPQs are opened directly by basename via the slot service. */
 }

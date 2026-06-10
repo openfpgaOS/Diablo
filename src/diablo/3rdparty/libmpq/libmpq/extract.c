@@ -163,6 +163,42 @@ int32_t libmpq__decompress_pkzip(uint8_t *in_buf, uint32_t in_size, uint8_t *wor
 	return tb;
 }
 
+/* Reusable allocation arena for the per-sector bzip2 streams.
+ *
+ * Every bzip2-compressed MPQ sector is its own stream, so this function
+ * runs BZ2_bzDecompressInit/End once per 4 KB sector.  With the default
+ * malloc those Init/End pairs are brutally expensive on this target: the
+ * DState is ~64 KB and the block's tt buffer is blockSize100k*400000 B
+ * (0.4-3.6 MB), which exceeds musl mallocng's mmap threshold -- so EVERY
+ * sector paid an mmap+munmap syscall pair plus a kernel zero-fill of the
+ * whole buffer (megabytes of memset per 4 KB of payload; seconds per
+ * CLX font/UI file).  Instead, hand bzlib a bump allocator over a
+ * lazily-malloc'd arena that is reset at stream init and reused forever.
+ * Allocation order per stream is fixed (DState, then tt), the stream is
+ * strictly nested (End before the next Init), and libmpq decompresses one
+ * sector at a time, so a single arena is sufficient and safe. */
+#define LIBMPQ_BZ_ARENA_SIZE (3600000u + 70000u + 4096u) /* tt@max blockSize100k=9 + DState + slack */
+static uint8_t *libmpq__bz_arena;
+static size_t   libmpq__bz_arena_used;
+
+static void *libmpq__bz_alloc(void *opaque, int items, int size) {
+	(void)opaque;
+	size_t want = ((size_t)items * (size_t)size + 15u) & ~(size_t)15u;
+	if (libmpq__bz_arena == NULL)
+		libmpq__bz_arena = malloc(LIBMPQ_BZ_ARENA_SIZE);
+	if (libmpq__bz_arena == NULL || libmpq__bz_arena_used + want > LIBMPQ_BZ_ARENA_SIZE)
+		return NULL;
+	void *p = libmpq__bz_arena + libmpq__bz_arena_used;
+	libmpq__bz_arena_used += want;
+	return p;
+}
+
+static void libmpq__bz_free(void *opaque, void *addr) {
+	/* No-op: the arena is reset wholesale at the next stream init. */
+	(void)opaque;
+	(void)addr;
+}
+
 /* this function decompress a stream using bzip2 library. */
 int32_t libmpq__decompress_bzip2(uint8_t *in_buf, uint32_t in_size, uint8_t *work_buf, uint8_t *out_buf, uint32_t out_size) {
 
@@ -171,9 +207,10 @@ int32_t libmpq__decompress_bzip2(uint8_t *in_buf, uint32_t in_size, uint8_t *wor
 	int32_t tb     = 0;
 	bz_stream strm;
 
-	/* initialize the bzlib decompression. */
-	strm.bzalloc = NULL;
-	strm.bzfree  = NULL;
+	/* initialize the bzlib decompression (arena-backed, see above). */
+	libmpq__bz_arena_used = 0;
+	strm.bzalloc = libmpq__bz_alloc;
+	strm.bzfree  = libmpq__bz_free;
 
 	/* initialize the structure. */
 	if ((result = BZ2_bzDecompressInit(&strm, 0, 0)) != BZ_OK) {
@@ -188,8 +225,17 @@ int32_t libmpq__decompress_bzip2(uint8_t *in_buf, uint32_t in_size, uint8_t *wor
 	strm.next_out  = (char *)out_buf;
 	strm.avail_out = out_size;
 
-	/* do the decompression. */
-	while (BZ2_bzDecompress(&strm) != BZ_STREAM_END);
+	/* do the decompression.  Bail on any error: the original
+	 * `while (... != BZ_STREAM_END);` spun forever on BZ_DATA_ERROR /
+	 * BZ_MEM_ERROR (a corrupt sector would hang the game). */
+	do {
+		result = BZ2_bzDecompress(&strm);
+	} while (result == BZ_OK && strm.avail_in > 0 && strm.avail_out > 0);
+	if (result != BZ_STREAM_END) {
+		/* error, truncated input, or output overflow */
+		BZ2_bzDecompressEnd(&strm);
+		return LIBMPQ_ERROR_UNPACK;
+	}
 
 	/* save transferred bytes. */
 	tb = strm.total_out_lo32;

@@ -34,7 +34,7 @@ extern "C" {
  * the depth should measure it at runtime — of_audio_free() returns the
  * full capacity while the stream voice is inactive (right after
  * of_audio_init) — as of_sdl2.c's queued-size accounting does. */
-#define OF_AUDIO_RING_PAIRS  65536
+#define OF_AUDIO_RING_PAIRS  131072
 
 #ifndef OF_PC
 

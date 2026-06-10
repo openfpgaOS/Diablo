@@ -36,6 +36,7 @@ LIBGCC    := $(shell $(CXX) $(ARCH) -print-libgcc-file-name)
 # ── Include paths ─────────────────────────────────────────────────────
 APPINC := -I$(CURDIR) -I$(CURDIR)/sdl/include -I$(DX)/Source \
           -I$(TP)/fmt/include -I$(TP)/simpleini -I$(TP)/libmpq -I$(TP)/libmpq/libmpq -I$(TP)/bzip2 -I$(TP)/zlib_shim -I$(TP)/dr_libs \
+          -I$(TP)/libsmackerdec/include \
           -I$(DX)/3rdParty/tl -I$(DX)/3rdParty/hoehrmann_utf8 -I$(DX)/3rdParty/PicoSHA2 \
           -I$(DX)/3rdParty/PKWare -I$(SDK)/include
 SYSINC := -nostdinc $(CXXINC) -isystem $(MUSL)/include -isystem $(GXXINC)
@@ -45,6 +46,16 @@ DEFS := -DNONET -DOPENFPGAOS -DDVL_NO_FILESYSTEM -DDEVILUTIONX_DISABLE_RTTI -DDE
         -DDEVILUTIONX_RESAMPLER_SPEEX -DDEVILUTIONX_DEFAULT_RESAMPLER=Speex \
         -DDEVILUTIONX_DISPLAY_TEXTURE_FORMAT=SDL_PIXELFORMAT_RGB888 \
         -DDEVILUTIONX_PALETTE_TRANSPARENCY_BLACK_16_LUT=1
+
+# `make PERF=1`: serial frame/audio telemetry every 2 s
+#   [of] perf: fps=A.B draw=C.Cms flip=D.Dms aud=Ems gap=Fms
+# draw = world render (in-game) or SVid decode (movies); aud = MIN buffered
+# audio in the window (~0 = ring ran dry); gap = silence the movie push-
+# decoder injected (supply deficit the ring level cannot show). Costs a few
+# us/frame; default OFF.
+ifeq ($(PERF),1)
+  DEFS += -DOF_PERF_TRACE
+endif
 
 # -fno-math-errno / -fno-trapping-math: this is bare metal with no errno-based
 # libm error checking and no installed FP traps, so these change no FP result
@@ -74,7 +85,6 @@ DX_SRCS := $(shell find $(DX)/Source -name '*.cpp' \
     -not -name 'protocol_zt.cpp' -not -name 'zerotier_native.cpp' -not -name 'zerotier_lwip.cpp' \
     -not -name 'sdl2_to_1_2_backports.cpp' \
     -not -name 'effects_stubs.cpp' -not -name 'sound_stubs.cpp' \
-    -not -name 'storm_svid.cpp' -not -name 'movie.cpp' \
     -not -name 'restrict.cpp')
 
 FMT_SRCS  := $(TP)/fmt/src/format.cc
@@ -83,6 +93,11 @@ MPQ_SRCS  := $(wildcard $(TP)/libmpq/libmpq/*.c)
 # backgrounds) with bzip2 (sector mask 0x10). The compress-only TUs link but
 # are dropped by --gc-sections since only BZ2_bzDecompress* is referenced.
 BZIP2_SRCS := $(wildcard $(TP)/bzip2/*.c)
+# Smacker cutscene decoder (vendored diasurgical/libsmackerdec @91e732b, the
+# exact commit upstream CMake pins; SDL_RWops-based, no exceptions/iostream).
+# -DNDEBUG on these TUs disarms BitReader's assert(0)-on-overread so a corrupt
+# video degrades instead of aborting.
+SMK_SRCS  := $(wildcard $(TP)/libsmackerdec/src/*.cpp)
 PKW_SRCS  := $(DX)/3rdParty/PKWare/explode.cpp $(DX)/3rdParty/PKWare/implode.cpp
 LOC_CXX   := $(CURDIR)/sdl/of_sdl2.cpp $(CURDIR)/sdl/of_aulib.cpp $(CURDIR)/platform/devx_stubs.cpp
 LOC_C     := $(CURDIR)/platform/of_libc_compat.c $(CURDIR)/platform/zlib_bzip2_stub.c \
@@ -94,38 +109,55 @@ DX_OBJS  := $(foreach s,$(DX_SRCS),$(call obj,$(s)))
 FMT_OBJS := $(foreach s,$(FMT_SRCS),$(call obj,$(s)))
 MPQ_OBJS := $(foreach s,$(MPQ_SRCS),$(call obj,$(s)))
 BZIP2_OBJS := $(foreach s,$(BZIP2_SRCS),$(call obj,$(s)))
+SMK_OBJS := $(foreach s,$(SMK_SRCS),$(call obj,$(s)))
+$(SMK_OBJS): CXXFLAGS += -DNDEBUG
 PKW_OBJS := $(foreach s,$(PKW_SRCS),$(call obj,$(s)))
 LOC_OBJS := $(foreach s,$(LOC_CXX) $(LOC_C),$(call obj,$(s)))
-ALL_OBJS := $(DX_OBJS) $(FMT_OBJS) $(MPQ_OBJS) $(BZIP2_OBJS) $(PKW_OBJS) $(LOC_OBJS)
+ALL_OBJS := $(DX_OBJS) $(FMT_OBJS) $(MPQ_OBJS) $(BZIP2_OBJS) $(SMK_OBJS) $(PKW_OBJS) $(LOC_OBJS)
 
-# ── Optional speed build for hot translation units ────────────────────
-# The whole tree is -Os by default: RAM is plentiful, but the in-order
-# 100 MHz core has a small I-cache, so blanket -O2 is not an obvious win.
-# HOT_OPT compiles only the speed-critical TUs at a higher level for A/B
-# testing on hardware: the audio mix/decode + software blit/present, plus
-# the MPQ/bzip2 asset decompressors. These bound frame time -- and since the
-# music ring is fed only between frames, shorter frames also shrink the
-# audio-underrun window. Default empty => the baseline build is byte-for-byte
-# unchanged. Enable with, e.g.:
-#   make HOT_OPT='-O2 -ffp-contract=fast'
-HOT_OPT ?=
+# ── Speed build for hot translation units (DEFAULT ON) ────────────────
+# The whole tree is -Os: RAM is plentiful, but the in-order 100 MHz core
+# has a small I-cache, so blanket -O2 is not an obvious win.  HOT_OPT
+# compiles only the speed-critical TUs at a higher level:
+#   - frame time:  the software renderer (dun_render/clx_render/scrollrt/
+#     text_render) + the SDL/audio shims — these bound fps, and shorter
+#     frames also shrink the audio-feed gap;
+#   - load time:   every decompress/convert pass a load runs (bzip2,
+#     PKWARE explode, libmpq huffman/ADPCM for SFX, CEL/CL2/PCX -> CLX
+#     conversion) — loads measure CPU-dominated, not SD-dominated;
+#   - cutscenes:   the Smacker bit-reader/decoder inner loops.
+# Disable for an A/B baseline with:  make HOT_OPT=
+HOT_OPT ?= -O2 -ffp-contract=fast
 HOT_SRCS := \
     $(CURDIR)/sdl/of_aulib.cpp $(CURDIR)/sdl/of_sdl2.cpp \
     $(DX)/Source/engine/render/dun_render.cpp $(DX)/Source/engine/render/clx_render.cpp \
     $(DX)/Source/engine/render/scrollrt.cpp $(DX)/Source/engine/render/text_render.cpp \
-    $(TP)/bzip2/decompress.c $(TP)/bzip2/huffman.c $(TP)/libmpq/libmpq/explode.c
+    $(TP)/bzip2/decompress.c $(TP)/bzip2/huffman.c $(TP)/libmpq/libmpq/explode.c \
+    $(TP)/libmpq/libmpq/huffman.c $(TP)/libmpq/libmpq/wave.c \
+    $(DX)/Source/utils/cel_to_clx.cpp $(DX)/Source/utils/cl2_to_clx.cpp \
+    $(DX)/Source/utils/pcx_to_clx.cpp \
+    $(TP)/libsmackerdec/src/SmackerDecoder.cpp $(TP)/libsmackerdec/src/BitReader.cpp
 ifneq ($(strip $(HOT_OPT)),)
   HOT_OBJS := $(foreach s,$(HOT_SRCS),$(call obj,$(s)))
   $(HOT_OBJS): CXXFLAGS += $(HOT_OPT)
   $(HOT_OBJS): CFLAGS   += $(HOT_OPT)
 endif
+# Smacker decode peaks (scene-cut keyframes) are the only frames that exceed
+# the 66 ms movie budget on HW (measured avg 18-53 ms/frame at -O2); -O3 on
+# just these two small TUs shaves the peaks. Appended after HOT_OPT so it
+# wins (last -O on the command line applies).
+$(call obj,$(TP)/libsmackerdec/src/SmackerDecoder.cpp): CXXFLAGS += -O3
+$(call obj,$(TP)/libsmackerdec/src/BitReader.cpp): CXXFLAGS += -O3
 
 .DEFAULT_GOAL := all
 
 # Generic compile rule: the object's stem (everything between $(OBJDIR)/ and
 # .o) is the source path relative to $(ROOT), so $(ROOT)/% is the source and
-# also the prerequisite (so edits trigger rebuilds).
-$(OBJDIR)/%.o: $(ROOT)/%
+# also the prerequisite (so edits trigger rebuilds).  The Makefile itself is
+# a prerequisite so flag changes (HOT_OPT, DEFS, ...) rebuild stale objects —
+# without it, A/B runs like `make HOT_OPT=` silently compare identical
+# binaries built with the old flags.
+$(OBJDIR)/%.o: $(ROOT)/% $(CURDIR)/Makefile
 	@mkdir -p $(dir $@)
 	@case "$<" in \
 	  *.cpp|*.cc) echo "CXX $*"; $(CXX) $(CXXFLAGS) -c -o $@ "$<" ;; \

@@ -128,6 +128,18 @@
                 ]
             },
             {
+                "id": 9,
+                "name": "Settings",
+                "required": false,
+                "parameters": "0x84",
+                "nonvolatile": true,
+                "address": "0x200C0000",
+                "size_maximum": "0x40000",
+                "extensions": [
+                    "ini"
+                ]
+            },
+            {
                 "id": 10,
                 "name": "Save 0",
                 "required": false,

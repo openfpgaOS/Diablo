@@ -198,7 +198,6 @@ void SDL_FreePalette(SDL_Palette *p) {
 }
 
 /* The window surface palette doubles as the hardware palette. */
-static SDL_Palette *g_screen_palette;
 static SDL_Surface *g_screen;       /* the window surface (8-bit) */
 static bool g_screen_palette_is_render_palette;
 /* The palette DevilutionX actually renders with: it attaches this to its
@@ -214,18 +213,17 @@ extern "C" void of_sdl_set_screen_palette_is_render(int enabled) {
 		g_render_palette = g_screen->format->palette;
 	}
 }
-static void push_palette_to_hw(const SDL_Palette *p, int first, int n) {
-	for (int i = 0; i < n && (first+i) < 256; i++) {
-		SDL_Color c = p->colors[first+i];
-		of_video_palette((uint8_t)(first+i), ((uint32_t)c.r<<16)|((uint32_t)c.g<<8)|c.b);
-	}
-}
 int SDL_SetPaletteColors(SDL_Palette *palette, const SDL_Color *colors, int first, int ncolors) {
 	if (!palette) return -1;
 	for (int i = 0; i < ncolors && (first+i) < palette->ncolors; i++)
 		palette->colors[first+i] = colors[i];
 	palette->version++;
-	if (palette == g_screen_palette) push_palette_to_hw(palette, first, ncolors);
+	/* NO immediate HW push: the hardware palette is global, so pushing here
+	 * recolors whatever frame is CURRENTLY on glass. SVid movies write the
+	 * new scene's palette before decoding the new frame -- an immediate push
+	 * showed the old frame in the new palette for the whole decode. The
+	 * version bump above makes present_screen() push it at the flip that
+	 * shows the matching pixels. */
 	/* NOTE: do NOT track g_render_palette here. DevilutionX sub-systems like
 	 * LoadPotionArt (called once per level transition from InitVirtualGamepadGFX)
 	 * call SDLC_SetSurfaceAndPaletteColors on a TEMP palette during level loads;
@@ -325,7 +323,10 @@ int  SDL_LockSurface(SDL_Surface *s) { if (s) s->locked++; return 0; }
 void SDL_UnlockSurface(SDL_Surface *s) { if (s && s->locked) s->locked--; }
 int  SDL_SetSurfacePalette(SDL_Surface *s, SDL_Palette *p) {
 	if (!s || !s->format) return -1;
-	if (s->format->palette && s->format->palette != p) SDL_FreePalette(s->format->palette);
+	if (s->format->palette == p) return 0; /* SDL2 semantics; also stops a
+	    refcount leak from repeated attaches (SVid re-attaches its palette
+	    on every mid-movie palette change). */
+	if (s->format->palette) SDL_FreePalette(s->format->palette);
 	s->format->palette = p; if (p) p->refcount++;
 	if (s == g_screen && p && g_screen_palette_is_render_palette) {
 		g_render_palette = p;
@@ -561,7 +562,6 @@ static SDL_Surface *make_screen(int w, int h) {
 		 * its pixel store. m->owns_pixels stays 0 so SDL_FreeSurface
 		 * never tries to free OS-owned memory. */
 		SDL_Surface *s = new_surface(w, h, SDL_PIXELFORMAT_INDEX8, of_video_surface(), fstride);
-		g_screen_palette = s->format->palette;
 		g_screen_palette_is_render_palette = false;
 		g_screen_aliases_fb = true;
 		return s;
@@ -569,7 +569,6 @@ static SDL_Surface *make_screen(int w, int h) {
 	/* Mismatched dims (e.g. running 640x480 game on a 320x240 mode):
 	 * keep the old private-buffer path; present_screen() will scale. */
 	SDL_Surface *s = new_surface(w, h, SDL_PIXELFORMAT_INDEX8, NULL, 0);
-	g_screen_palette = s->format->palette;
 	g_screen_palette_is_render_palette = false;
 	g_screen_aliases_fb = false;
 	return s;
@@ -585,7 +584,28 @@ SDL_Window *SDL_CreateWindow(const char *title, int x, int y, int w, int h, Uint
 }
 void SDL_DestroyWindow(SDL_Window *win) { (void)win; }
 SDL_Surface *SDL_GetWindowSurface(SDL_Window *win) { (void)win; if (!g_screen) g_screen = make_screen(g_window.w?g_window.w:640, g_window.h?g_window.h:480); return g_screen; }
+/* Used by upstream storm_svid's generic BlitFrame branch (compiled out under
+ * OPENFPGAOS, which has its own 8-bit path); kept for API completeness. */
+Uint32 SDL_GetWindowPixelFormat(SDL_Window *win) { (void)win; return SDL_PIXELFORMAT_INDEX8; }
 SDL_Surface *SDL_GetVideoSurface(void) { return SDL_GetWindowSurface(&g_window); }
+
+/* ---- frame-time telemetry (build with `make PERF=1`) ----
+ * One serial line every 2 s: fps, average world-draw / SVid-decode ms
+ * (of_perf_add_draw_us from scrollrt.cpp / storm_svid.cpp), average flip ms
+ * (of_video_flip = cache clean + page swap), minimum buffered audio (aud=,
+ * ~0 = ring ran dry), and injected-silence (gap=, the push-decoder zero-fill
+ * that the ring level cannot see).  This instrumentation diagnosed the movie
+ * pacing freeze, the palette-fade stall, and the audio-gap injection -- keep
+ * it one flag away. */
+#ifdef OF_PERF_TRACE
+static unsigned g_perf_draw_us_acc, g_perf_draw_n;
+extern int g_perf_aud_min_pairs;                    /* of_aulib.cpp */
+extern "C" unsigned of_svid_zero_fill_samples;      /* push_aulib_decoder.cpp */
+extern "C" void of_perf_add_draw_us(unsigned us) {
+	g_perf_draw_us_acc += us;
+	g_perf_draw_n++;
+}
+#endif
 
 /* Push the rendered frame to the hardware. When g_screen aliases the
  * of_video back buffer (matching dims, the common Pocket case), this
@@ -652,7 +672,43 @@ static void present_screen(void) {
 			of_video_palette_bulk(pal, 256);
 		}
 	}
+#ifndef OF_PERF_TRACE
 	of_video_flip();
+#else
+	{
+		static unsigned perf_frames, perf_flip_us;
+		static unsigned perf_window_start_ms;
+		static bool perf_window_started;
+		const unsigned t0 = of_time_us();
+		of_video_flip();
+		perf_flip_us += of_time_us() - t0;
+		perf_frames++;
+		const unsigned now_ms = of_time_ms();
+		if (!perf_window_started) {
+			perf_window_started = true;
+			perf_window_start_ms = now_ms;
+		}
+		const unsigned span = now_ms - perf_window_start_ms;
+		if (span >= 2000) {
+			printf("[of] perf: fps=%u.%u draw=%u.%ums flip=%u.%ums aud=%dms gap=%ums\n",
+			    (perf_frames * 1000u) / span,
+			    ((perf_frames * 10000u) / span) % 10u,
+			    g_perf_draw_n ? g_perf_draw_us_acc / g_perf_draw_n / 1000u : 0u,
+			    g_perf_draw_n ? (g_perf_draw_us_acc / g_perf_draw_n / 100u) % 10u : 0u,
+			    perf_flip_us / perf_frames / 1000u,
+			    (perf_flip_us / perf_frames / 100u) % 10u,
+			    g_perf_aud_min_pairs >= 0 ? g_perf_aud_min_pairs / 48 : -1,
+			    of_svid_zero_fill_samples / 22u);
+			of_svid_zero_fill_samples = 0;
+			perf_frames = 0;
+			perf_flip_us = 0;
+			g_perf_draw_us_acc = 0;
+			g_perf_draw_n = 0;
+			g_perf_aud_min_pairs = -1;
+			perf_window_start_ms = now_ms;
+		}
+	}
+#endif /* OF_PERF_TRACE */
 	if (g_screen_aliases_fb) {
 		/* of_video uses triple buffering: after flip, the current
 		 * draw buffer is the next free page (not the one we just

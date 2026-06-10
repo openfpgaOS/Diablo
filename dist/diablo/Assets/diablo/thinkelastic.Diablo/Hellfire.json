@@ -11,10 +11,6 @@
                 "filename": "os.bin"
             },
             {
-                "id": 2,
-                "filename": "hellfire.ini"
-            },
-            {
                 "id": 3,
                 "filename": "diablo.elf"
             },
@@ -33,6 +29,10 @@
             {
                 "id": 7,
                 "filename": "hellfire.mpq"
+            },
+            {
+                "id": 9,
+                "filename": "hellfire.ini"
             },
             {
                 "id": 10,

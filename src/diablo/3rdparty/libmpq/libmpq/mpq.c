@@ -228,6 +228,13 @@ int32_t libmpq__archive_open(mpq_archive_s **mpq_archive, const char *mpq_filena
 		result = LIBMPQ_ERROR_OPEN;
 		goto error;
 	}
+#else
+	/* openfpgaOS: every sector access is fseeko+fread and the seek drops
+	 * stdio's readahead, so the default 1 KB BUFSIZ buffer only adds a
+	 * wasted extra kernel read + memcpy per sector.  Go unbuffered: each
+	 * fread becomes one exact-size kernel read served from the OS's 4 MB
+	 * file cache. */
+	setvbuf((*mpq_archive)->fp, NULL, _IONBF, 0);
 #endif
 
 	/* assign some default values. */
@@ -470,6 +477,11 @@ int32_t libmpq__archive_dup(mpq_archive_s *orig_archive, const char *mpq_filenam
 		result = errno == ENOENT ? LIBMPQ_ERROR_EXIST : LIBMPQ_ERROR_OPEN;
 		goto error;
 	}
+
+#ifndef LIBMPQ_FILE_BUFFER_SIZE
+	/* unbuffered, same rationale as libmpq__archive_open. */
+	setvbuf((*mpq_archive)->fp, NULL, _IONBF, 0);
+#endif
 
 #ifdef LIBMPQ_FILE_BUFFER_SIZE
 	if (setvbuf((*mpq_archive)->fp, NULL, _IOFBF, LIBMPQ_FILE_BUFFER_SIZE) != 0) {

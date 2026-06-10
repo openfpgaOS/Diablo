@@ -40,7 +40,7 @@ extern "C" void of_aulib_ensure_hw_mixer_inited(void);
 
 #define OF_OUT_RATE 48000
 #define OF_MIX_BLOCK 1024
-/* Per-pump fill cap (stereo pairs). After a stall the (~1.37 s) OS ring is
+/* Per-pump fill cap (stereo pairs). After a stall the (~2.7 s) OS ring is
  * nearly empty; refilling it all in one pump would decode over a second of
  * music in a single frame. ~85 ms per pump never binds in steady state
  * (per-frame drain is ~800-1600 pairs at 30-60 fps) and spreads a post-stall
@@ -62,6 +62,21 @@ extern "C" void of_aulib_ensure_hw_mixer_inited(void);
 
 static bool g_inited = false;
 static int  g_frameSize = OF_MIX_BLOCK;
+#ifdef OF_PERF_TRACE
+/* Minimum buffered audio observed since the last perf print (stereo pairs;
+ * ~0 means the ring ran dry = audible underrun). Sampled in the pump before
+ * refill; printed+reset by of_sdl2.cpp's perf line (extern there). */
+int g_perf_aud_min_pairs = -1;
+#endif
+/* OS ring capacity in stereo pairs, measured at init (of_audio_free()
+ * reports the full depth while the stream voice is inactive). */
+static int  g_ring_capacity = 0;
+/* Max pairs the pump keeps buffered in the ring. Music wants the FULL
+ * (~2.7 s) ring so it coasts through loads. Push-fed streams (SVid movie
+ * audio) must NOT: their decoder zero-fills when its frame queue is empty,
+ * so a deep ring buries each frame's audio ~2.7 s behind the video --
+ * storm_svid caps this during playback for lip-sync. 0 = uncapped. */
+static int  g_max_buffered_pairs = 0;
 static bool g_output_suspended = false;
 static unsigned g_output_suspend_depth = 0;
 static bool g_hw_mixer_inited = false;
@@ -471,16 +486,25 @@ bool init(int freq, SDL_AudioFormat format, int channels, int frameSize, const s
 	 * then resets the audio service state with of_audio_init() and lets the
 	 * next pump restart voice 31 through of_audio_write(). */
 	of_audio_init();
+	/* Voice inactive right after init, so free == full ring capacity. */
+	g_ring_capacity = of_audio_free();
 	/* Underrun handling is in HARDWARE: voice 31 runs in the mixer's stream
 	 * mode, holding (in ramped silence) at the published write pointer when
 	 * the main-loop pump stalls and resuming by itself -- no app-side stall
-	 * detection, ring resets, or background feeders. The ~1.37 s OS ring
+	 * detection, ring resets, or background feeders. The ~2.7 s OS ring
 	 * (OF_TARGET_AUDIO_STREAM_SIZE) is purely how long music keeps PLAYING
 	 * through a blocking load before the graceful fade. */
 	g_voice_open = false;
 	g_output_suspended = false;
 	g_output_suspend_depth = 0;
 	g_inited = true;
+	/* Initialize the HW mixer NOW, before any music stream exists.
+	 * of_mixer_init resets every voice (including 31); deferring it to the
+	 * first HW SFX -- which always lands mid-music -- dumped the whole
+	 * music buffer and restarted the voice: a guaranteed once-per-boot
+	 * audible drop ("mixer_init done; voice31 will restart"). At this
+	 * point nothing is playing, so the reset is free. */
+	of_aulib_ensure_hw_mixer_inited();
 	return true;
 }
 void quit()
@@ -552,6 +576,28 @@ extern "C" void of_aulib_resume_output(void)
 	audio_unlock();
 }
 
+/* Cap (or uncap, pairs=0) how much audio the pump keeps buffered ahead of
+ * playback. 48 kHz stereo pairs; see g_max_buffered_pairs. */
+extern "C" void of_aulib_set_max_buffered_pairs(int pairs)
+{
+	g_max_buffered_pairs = pairs;
+}
+
+/* Stop all HW SFX voices (0-30) WITHOUT touching the music stream voice 31.
+ * Level transitions must tear down looping SFX so no voice keeps DMA-reading
+ * level-owned PCM buffers that are about to be freed -- but music now plays
+ * THROUGH the load (deep ring + HW stream-mode hold), so the old whole-output
+ * suspend is gone. NOTE: of_mixer_stop_all() is NOT usable here -- it writes
+ * CTRL=0 to every voice INCLUDING 31, killing music behind the OS audio
+ * bookkeeping's back. */
+extern "C" void of_aulib_stop_hw_sfx(void)
+{
+	if (!g_hw_mixer_inited)
+		return;
+	for (int v = 0; v < OF_AUDIO_RING_VOICE; ++v)
+		of_mixer_stop(v);
+}
+
 /* ====================================================================== */
 /* Pump -- called from the SDL shim's main-loop event/delay path.          */
 /* ====================================================================== */
@@ -579,8 +625,33 @@ extern "C" void of_aulib_pump(void)
 	static int16_t out[OF_MIX_BLOCK * 2];
 
 	int freePairs = of_audio_free();
-	if (freePairs > OF_PUMP_FILL_CAP_PAIRS)
-		freePairs = OF_PUMP_FILL_CAP_PAIRS;
+	if (g_ring_capacity > 0) {
+		int buffered = g_ring_capacity - 1 - freePairs;
+		/* OS voice inactive: of_audio_free() reports the full ring (N, not
+		 * N-1), making this -1 -- the ring truly holds nothing then. */
+		if (buffered < 0) buffered = 0;
+#ifdef OF_PERF_TRACE
+		if (g_perf_aud_min_pairs < 0 || buffered < g_perf_aud_min_pairs)
+			g_perf_aud_min_pairs = buffered;
+#endif
+		if (g_max_buffered_pairs > 0) {
+			/* Latency cap (movie audio): keep at most N pairs buffered. */
+			int room = g_max_buffered_pairs - buffered;
+			if (room < 0) room = 0;
+			if (freePairs > room) freePairs = room;
+		}
+	}
+	{
+		/* Per-pump fill cap: amortizes refill bursts in steady state, but
+		 * while the buffer is LOW (music just started / post-stall) fill
+		 * 4x harder so the cushion banks before a hiccup can expose it. */
+		int cap = OF_PUMP_FILL_CAP_PAIRS;
+		if (g_ring_capacity > 0
+		    && g_ring_capacity - 1 - freePairs < g_ring_capacity / 2)
+			cap = OF_PUMP_FILL_CAP_PAIRS * 4;
+		if (freePairs > cap)
+			freePairs = cap;
+	}
 	while (freePairs > 0) {
 		int n = freePairs < OF_MIX_BLOCK ? freePairs : OF_MIX_BLOCK;
 		std::memset(acc, 0, sizeof(int32_t) * n * 2);

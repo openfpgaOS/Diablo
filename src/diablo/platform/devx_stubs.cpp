@@ -1,20 +1,12 @@
 /*
- * devx_stubs.cpp -- stubs for DevilutionX subsystems not yet wired on the
- * Pocket: Smacker cutscenes (movie.cpp / storm_svid.cpp are excluded until
- * libsmackerdec is vendored) and SDL_image PNG loading. These let the game
- * link and boot; cutscenes are skipped and PNG assets fail to load (the UI
- * art DevilutionX needs is CLX, not PNG, so this is non-fatal).
+ * devx_stubs.cpp -- stubs for DevilutionX subsystems not wired on the
+ * Pocket: SDL_image PNG loading (the UI art DevilutionX needs is CLX, not
+ * PNG, so failing PNG loads is non-fatal). Smacker cutscenes are REAL now:
+ * movie.cpp / storm_svid.cpp compile against the vendored libsmackerdec.
  */
 #include <SDL.h>
 
 namespace devilution {
-
-bool movie_playing = false;
-bool loop_movie = false;
-void play_movie(const char * /*pszMovie*/, bool /*user_can_close*/) {}
-void PlayInGameMovie(const char * /*pszMovie*/) {}
-void SVidMute() {}
-void SVidUnmute() {}
 
 // restrict.cpp's ReadOnlyTest() probes writability by creating an arbitrary
 // throwaway file in PrefPath. That can't work on the slot-based filesystem

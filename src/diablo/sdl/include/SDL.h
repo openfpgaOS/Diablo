@@ -208,6 +208,8 @@ SDL_bool SDL_PointInRect(const SDL_Point *p, const SDL_Rect *r);
 #define SDL_PIXELFORMAT_BGRA8888 0x16862004u
 #define SDL_PIXELFORMAT_RGB565   0x15151002u
 #define SDL_PIXELFORMAT_UNKNOWN  0u
+/* The shim's only indexed format is INDEX8, so the predicate is exact. */
+#define SDL_ISPIXELFORMAT_INDEXED(f) ((f) == SDL_PIXELFORMAT_INDEX8)
 
 typedef struct SDL_Color { Uint8 r, g, b, a; } SDL_Color;
 
@@ -673,6 +675,7 @@ typedef enum {
 SDL_Window *SDL_CreateWindow(const char *title, int x, int y, int w, int h, Uint32 flags);
 void SDL_DestroyWindow(SDL_Window *window);
 SDL_Surface *SDL_GetWindowSurface(SDL_Window *window);
+Uint32 SDL_GetWindowPixelFormat(SDL_Window *window);
 int  SDL_UpdateWindowSurface(SDL_Window *window);
 int  SDL_UpdateWindowSurfaceRects(SDL_Window *window, const SDL_Rect *rects, int numrects);
 void SDL_SetWindowTitle(SDL_Window *window, const char *title);
