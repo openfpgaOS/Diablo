@@ -1,4 +1,10 @@
 #!/bin/bash
+#------------------------------------------------------------------------------
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileType: SOURCE
+# SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+#------------------------------------------------------------------------------
+
 # Minimal version - less likely to lock your keyboard completely
 
 echo "=== Analogue Pocket Dock Keyboard Controller (Minimal) ==="

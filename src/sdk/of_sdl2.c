@@ -1235,11 +1235,23 @@ static void audio_pump(void) {
 }
 void SDL_AudioPump(void) { audio_pump(); }
 
+/* Ring capacity in stereo pairs, measured at runtime: of_audio_free()
+ * reports the full per-target ring depth while the stream voice is
+ * inactive (i.e. right after of_audio_init).  The build-time
+ * OF_AUDIO_RING_PAIRS constant only matches the pocket target (mister
+ * and sim reserve smaller rings), so queued-size math must not use it. */
+static int __sdl_audio_ring_pairs;
+static void __sdl_audio_measure_ring(void) {
+	if (!__sdl_audio_ring_pairs)
+		__sdl_audio_ring_pairs = of_audio_free();
+}
+
 SDL_AudioDeviceID SDL_OpenAudioDevice(const char *device, int iscapture,
         const SDL_AudioSpec *desired, SDL_AudioSpec *obtained, int allowed_changes) {
 	(void)device; (void)iscapture; (void)allowed_changes;
 	if (!desired) return 0;
 	of_audio_init();
+	__sdl_audio_measure_ring();
 	/* Route the requested rate through the mixer's stream voice so it is
 	 * resampled to the hardware 48 kHz; without this, 22 kHz output would
 	 * pitch up. */
@@ -1279,11 +1291,11 @@ SDL_AudioStatus SDL_GetAudioStatus(void) { return SDL_GetAudioDeviceStatus(1); }
 
 int SDL_QueueAudio(SDL_AudioDeviceID d, const void *data, Uint32 len) {
 	(void)d;
-	if (!__sdl_audio_opened) { of_audio_init(); __sdl_audio_opened = 1; __sdl_audio_paused = 0; }
+	if (!__sdl_audio_opened) { of_audio_init(); __sdl_audio_measure_ring(); __sdl_audio_opened = 1; __sdl_audio_paused = 0; }
 	of_audio_write((const int16_t *)data, (int)(len / 4));
 	return 0;
 }
-Uint32 SDL_GetQueuedAudioSize(SDL_AudioDeviceID d){ (void)d; int f = of_audio_free(); int q = OF_AUDIO_RING_PAIRS - (f>0?f:0); return (Uint32)(q>0?q:0) * 4u; }
+Uint32 SDL_GetQueuedAudioSize(SDL_AudioDeviceID d){ (void)d; int cap = __sdl_audio_ring_pairs ? __sdl_audio_ring_pairs : OF_AUDIO_RING_PAIRS; int f = of_audio_free(); int q = cap - (f>0?f:0); return (Uint32)(q>0?q:0) * 4u; }
 void SDL_ClearQueuedAudio(SDL_AudioDeviceID d){ (void)d; }
 
 static SDL_AudioSpec *load_wav_mem(const Uint8 *data, Uint32 size, SDL_AudioSpec *spec, Uint8 **buf, Uint32 *len) {

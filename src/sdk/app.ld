@@ -27,9 +27,13 @@ ENTRY(_start)
 
 MEMORY {
     APP_BRAM (rwx) : ORIGIN = 0x00004000, LENGTH = 0x3800
-    /* Ends at 0x13A7C000: below the 4 MB OS file cache, dynamic audio
-     * reservation, and 512 KB app stack in the no-SoundFont case. */
-    SDRAM    (rwx) : ORIGIN = 0x10400000, LENGTH = 0x0367C000
+    /* Ends at 0x13A40000 = OF_TARGET_APP_STATIC_END (pocket): below the
+     * 512 KB OS runtime stack, 4 MB file cache, 256 KB audio stream
+     * ring, and 512 KB app stack.  MUST equal OF_TARGET_APP_STATIC_END
+     * in os/targets/<t>/target_platform.h — the loader rejects (-7,
+     * seg_in_app_vmap) any PT_LOAD ending above it, so a larger window
+     * here would link fine and fail at load. */
+    SDRAM    (rwx) : ORIGIN = 0x10400000, LENGTH = 0x03640000
 }
 
 SECTIONS {

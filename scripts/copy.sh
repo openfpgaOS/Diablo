@@ -1,4 +1,10 @@
 #!/bin/bash
+#------------------------------------------------------------------------------
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileType: SOURCE
+# SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+#------------------------------------------------------------------------------
+
 #
 # openfpgaOS SDK — Copy to Pocket SD Card
 #
@@ -13,7 +19,6 @@
 set -e
 
 GREEN='\033[92m'
-RED='\033[91m'
 RESET='\033[0m'
 
 SDK_DIR="$(cd "$(dirname "$0")/.." && pwd)"

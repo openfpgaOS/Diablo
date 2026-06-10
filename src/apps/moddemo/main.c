@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * moddemo — minimal 4-channel ProTracker MOD player
  *
@@ -11,19 +17,17 @@
  *     the HW mixer's AXI master sees committed bytes)
  *   - Per-voice rate updates with of_mixer_set_rate_raw (Q16.16) on
  *     the tracker's tick boundary — no per-sample CPU mixing
- *   - Reserved of_mixer_set_filter calls for the Amiga-A500 low-pass
- *     path; current firmware keeps that API as a no-op compatibility hook
  *
  * The CPU runs the tracker engine (period table, effect column,
  * volume slides, arpeggios) at ~50 Hz; everything per-sample is the
  * HW mixer's job.  This is what makes a MOD demo cheap on Pocket.
  *
  * Slot map (per instance.json):
- *   slot:3  primary MOD file
- *   slot:4  alternate MOD file (A button switches)
+ *   slot:4  primary MOD file
+ *   slot:5  alternate MOD file (A button switches)
  *
  * Controls:
- *   A   switch between slot:3 and slot:4
+ *   A   switch between slot:4 and slot:5
  *   B   skip to next pattern in the song
  */
 
@@ -91,12 +95,6 @@ static const uint16_t period_table[36] = {
 /* Convert Amiga period to playback rate in Hz.
  * Amiga base clock = 7093789.2 Hz (PAL), period is clock divider. */
 #define AMIGA_CLOCK 7093789
-
-/* Reserved Amiga-style low-pass settings. The current mixer firmware
- * ignores of_mixer_set_filter(), but keeping the values here preserves
- * the intended A500-style path for hardware that implements it later. */
-#define MOD_LPF_CUTOFF  35000
-#define MOD_LPF_Q       80
 
 /* Pre-computed 16.16 fixed-point rates for each period */
 static uint32_t period_to_rate_fp16(uint16_t period) {
@@ -313,7 +311,6 @@ static void trigger_note(channel_t *c, uint16_t period, int sample_offset) {
             /* Slot may have looped on the previous sample — clear the bit. */
             of_mixer_set_loop(c->voice, -1, 0);
         }
-        of_mixer_set_filter(c->voice, MOD_LPF_CUTOFF, MOD_LPF_Q, 1);
     }
 }
 
@@ -818,8 +815,8 @@ int main(void) {
     /* Initialize mixer */
     of_mixer_init(32, OF_MIXER_OUTPUT_RATE);
 
-    /* Load MOD files from slots 3 and 4 */
-    static const char *slot_names[] = { "slot:3", "slot:4" };
+    /* Load MOD files from slots 4 and 5 */
+    static const char *slot_names[] = { "slot:4", "slot:5" };
     static uint8_t *file_bufs[MAX_SONGS];
     (void)file_bufs;  /* kept alive so pattern_data pointers remain valid */
 
@@ -849,7 +846,7 @@ int main(void) {
     }
 
     if (num_songs == 0) {
-        printf("No valid MOD files found in slots 3-4.\n");
+        printf("No valid MOD files found in slots 4-5.\n");
         for (;;) usleep(100000);
     }
 

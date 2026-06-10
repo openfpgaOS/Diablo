@@ -1,3 +1,9 @@
+#------------------------------------------------------------------------------
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileType: SOURCE
+# SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+#------------------------------------------------------------------------------
+
 # openfpgaOS SDK Makefile
 #
 # Two ways to ship code with this SDK:
@@ -107,6 +113,7 @@ help:
 	@printf "    $(C_CMD)make $(C_VERB)copy$(C_RESET) $(C_ARG)CORE=sdk$(C_RESET)            Copy SDK demo core only\n"
 	@printf "    $(C_CMD)make $(C_VERB)copy$(C_RESET) $(C_ARG)CORE=<core>$(C_RESET)         Copy the <core> custom core only\n"
 	@printf "    $(C_CMD)make $(C_VERB)package$(C_RESET)                  Package SDK demo core + every custom core\n"
+	@printf "    $(C_CMD)make $(C_VERB)release$(C_RESET) $(C_ARG)CORE=<core>$(C_RESET)      Package + draft a GitHub release (tag <core>-v<ver>)\n"
 	@printf "    $(C_CMD)make $(C_VERB)tools$(C_RESET)                    Build PHDP host tools\n"
 	@printf "    $(C_CMD)make $(C_VERB)push$(C_RESET) $(C_ARG)DEST=\"path/to/sdk\"$(C_RESET)   Mirror src + os.bin into another SDK (keeps its core)\n"
 	@printf "    $(C_CMD)make $(C_VERB)clean$(C_RESET)                    Remove all build artifacts\n"
@@ -228,6 +235,23 @@ else
 	./scripts/package.sh
 endif
 
+# ── Publish a core to GitHub Releases ────────────────────────────────
+# `make release CORE=<name>`  → build + package the core, then create a DRAFT
+#                               GitHub release tagged <core>-v<version> (version
+#                               read from the core's core.json). Notes are the
+#                               commit subjects since the previous <core>-v* tag,
+#                               or "first release" when there is no previous tag.
+#   PREV=<tag>    override the changelog baseline (e.g. PREV=v1.1.12 to bridge
+#                 Doom's first per-core release off the legacy v1.1.x series)
+#   PUBLISH=1     publish a live release instead of a draft
+release:
+	@test -n "$(CORE)" || { \
+		printf "Usage: make release CORE=<name> [PREV=<tag>] [PUBLISH=1]\n"; \
+		exit 1; \
+	}
+	$(MAKE) package CORE=$(CORE)
+	@PREV="$(PREV)" PUBLISH="$(PUBLISH)" ./scripts/release.sh "$(CORE)"
+
 # ── Push SDK to another SDK checkout ────────────────────────────────
 # Mirrors source + os.bin + bank.ofsf into another SDK at $(DEST).
 # Leaves the FPGA core (bitstream.rbf_r, ap_core.sof, loader.bin)
@@ -277,4 +301,4 @@ else
 	rm -rf build .obj releases
 endif
 
-.PHONY: all help setup core build debug test copy package push tools clean
+.PHONY: all help setup core build debug test copy package release push tools clean

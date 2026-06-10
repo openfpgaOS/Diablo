@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * fbdemo — load an indexed PNG and display it
  *
@@ -8,7 +14,7 @@
  *     (terminal, framebuffer, overlay)
  *
  * Slot map:
- *   slot:3  PNG file decoded at startup (see Assets/.../instance.json)
+ *   slot:4  PNG file decoded at startup (see Assets/.../instance.json)
  *
  * Controls:
  *   A / B / Start  cycle display mode (Terminal -> Framebuffer -> Overlay)
@@ -41,10 +47,10 @@ int main(void) {
     of_video_init();
     of_video_set_display_mode(OF_DISPLAY_OVERLAY);
 
-    printf("[fbdemo] Loading slot:3 ...\n");
+    printf("[fbdemo] Loading slot:4 ...\n");
 
-    FILE *f = fopen("slot:3", "rb");
-    if (!f) halt("cannot open slot:3");
+    FILE *f = fopen("slot:4", "rb");
+    if (!f) halt("cannot open slot:4");
     uint32_t file_size = (uint32_t)fread(png_buf, 1, MAX_PNG_SIZE, f);
     fclose(f);
     if (file_size == 0) halt("empty file");

@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * test_audio.c — Mixer and audio tests
  *
@@ -486,8 +492,6 @@ void test_mixer_stress(void) {
 
     section_end();
 }
-
-void test_opl3(void) { }
 
 void test_audio_stream(void) {
     section_start("Audio Strm");

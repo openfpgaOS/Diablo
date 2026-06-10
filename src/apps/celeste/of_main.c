@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * celeste — Celeste Classic port (SDL2-native shim into openfpgaOS HAL)
  *
@@ -38,10 +44,10 @@
 #include "tilemap.h"
 
 /* ======================================================================
- * SFX bank — bundled `celeste-sfx.bin` at slot:4
+ * SFX bank — bundled `celeste-sfx.bin` at slot:5
  *
  * The 23 PICO-8 SFX Celeste actually uses are concatenated into a
- * single binary at slot:4.  Format (little-endian):
+ * single binary at slot:5.  Format (little-endian):
  *
  *   uint32  magic = 'CSFX' (0x58465343)
  *   uint32  version = 1
@@ -227,9 +233,9 @@ static Mix_Chunk *make_chunk_from_wav(const uint8_t *wav, uint32_t size) {
 }
 
 static void LoadSFX(void) {
-    FILE *f = fopen("slot:4", "rb");
+    FILE *f = fopen("slot:5", "rb");
     if (!f) {
-        printf("[celeste] no slot:4 (sfx bank); audio silent\n");
+        printf("[celeste] no slot:5 (sfx bank); audio silent\n");
         return;
     }
     fseek(f, 0, SEEK_END);

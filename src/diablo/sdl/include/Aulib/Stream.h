@@ -11,7 +11,6 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <vector>
 
 #include <SDL_rwops.h>
 #include <aulib.h>
@@ -37,7 +36,6 @@ public:
 	bool isPaused() const { return paused_; }
 	void setVolume(float volume) { volume_ = volume; }
 	void setStereoPosition(float position);
-	void setReadAheadFrames(int frames);
 	void mute() { muted_ = true; }
 	void unmute() { muted_ = false; }
 	bool isMuted() const { return muted_; }
@@ -49,16 +47,12 @@ public:
 	// Sums this stream into the int32 stereo accumulator for `frames`
 	// output frames; returns false when playback has finished.
 	bool mixInto(int32_t *accum, int frames);
-	void maintainReadAhead();
 	void runFinishCallback();
 
 private:
 	bool nextFrame(float out[2]);
 	bool decodeRawFrame(float out[2]);
 	bool decodeLoopedFrame(float out[2]);
-	void clearReadAhead();
-	bool fillReadAhead(int maxFrames);
-	bool popReadAhead(float out[2]);
 
 	SDL_RWops *rwops_;
 	std::unique_ptr<Decoder> decoder_;
@@ -96,15 +90,6 @@ private:
 	float ibuf_[1024 * 2];
 	int ihave_ = 0; // frames available in ibuf_
 	int ipos_ = 0;  // frames consumed from ibuf_
-
-	// Optional decoded stereo source-frame ring. This is used for long music
-	// streams on openfpgaOS so the mixer mostly consumes RAM instead of doing
-	// MPQ/WAV reads directly in the audio pump.
-	std::vector<float> readAhead_;
-	int readAheadCapacity_ = 0; // stereo frames
-	int readAheadRead_ = 0;
-	int readAheadWrite_ = 0;
-	int readAheadCount_ = 0;
 };
 
 } // namespace Aulib

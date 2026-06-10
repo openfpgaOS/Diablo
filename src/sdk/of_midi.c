@@ -11,7 +11,13 @@
  * them to of_smp_voice_* calls.  Per-channel controller state (volume,
  * expression, sustain, filter) is kept here because it's tracked at the
  * MIDI-event level and needs to survive across note-ons.
+ *
+ * MIDI is hardware-only; on the SDL2 desktop build (OF_PC) this file
+ * collapses to no-op stubs at the bottom so apps that pull it in still
+ * link without dragging in OF_SVC / fastram dependencies.
  */
+
+#ifndef OF_PC
 
 #include "include/of_midi.h"
 #include "include/of_smp_bank.h"
@@ -556,3 +562,22 @@ int of_midi_get_program(int ch) {
     if (ch < 0 || ch > 15) return 0;
     return M.program[ch];
 }
+
+#else /* OF_PC — desktop has no hardware MIDI path; provide silent stubs */
+
+#include "include/of_midi.h"
+#include <stdint.h>
+
+int  of_midi_init(void)                                 { return 0; }
+int  of_midi_play(const uint8_t *d, uint32_t l, int lp) { (void)d; (void)l; (void)lp; return 0; }
+void of_midi_stop(void)                                 {}
+void of_midi_pause(void)                                {}
+void of_midi_resume(void)                               {}
+void of_midi_pump(void)                                 {}
+int  of_midi_playing(void)                              { return 0; }
+int  of_midi_paused(void)                               { return 0; }
+int  of_midi_get_volume(void)                           { return 100; }
+void of_midi_set_volume(int v)                          { (void)v; }
+int  of_midi_get_program(int ch)                        { (void)ch; return 0; }
+
+#endif /* OF_PC */

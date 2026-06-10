@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * testdemo — kernel acceptance test suite
  *
@@ -39,7 +45,6 @@ static int fail_log_count;
 /* ================================================================
  * Two-column layout state
  * ================================================================ */
-#define COL_W   19      /* characters per column */
 #define COL1_X  1       /* left column x (0-based) */
 #define COL2_X  21      /* right column x */
 #define ROW_TOP 4       /* first data row */
@@ -203,12 +208,8 @@ static const test_fn tests[] = {
     test_malloc_edge,
     test_malloc_free,
     test_memset_stack,
-    test_psram_memory,
-    test_cram0_256k,
     test_cache_primitives,
     test_cache,
-    test_cache_cram0,
-    test_cache_cram1,
     test_file_slots,
     test_file_negative,
     test_file_io,
@@ -225,7 +226,6 @@ static const test_fn tests[] = {
     test_mixer_adv,
     test_mixer_stress,
     // --- bisecting 3rd-pass hang ---
-    // test_opl3,
     // test_midi,
     // test_midi_smp,
     test_net,

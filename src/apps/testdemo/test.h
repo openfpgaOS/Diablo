@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * test.h — Shared test harness for openfpgaOS test suite
  */
@@ -40,10 +46,7 @@ void test_timer_edge(void);
 void test_malloc(void);
 void test_malloc_edge(void);
 void test_malloc_free(void);
-void test_accel(void);
 void test_memset_stack(void);
-void test_psram_memory(void);
-void test_cram0_256k(void);
 void test_file_slots(void);
 void test_file_negative(void);
 void test_file_io(void);
@@ -68,11 +71,8 @@ void test_lzw(void);
 void test_version(void);
 void test_cache_primitives(void);
 void test_cache(void);
-void test_cache_cram0(void);
-void test_cache_cram1(void);
 void test_mixer_adv(void);
 void test_mixer_stress(void);
-void test_opl3(void);
 void test_midi(void);
 void test_midi_smp(void);
 void test_audio_stream(void);

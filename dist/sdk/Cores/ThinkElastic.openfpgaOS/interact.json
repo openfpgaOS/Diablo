@@ -37,20 +37,12 @@
                         "name": "None"
                     },
                     {
-                        "value": "0x03",
-                        "name": "SNES"
-                    },
-                    {
-                        "value": "0x0B",
-                        "name": "SNES A,B<->X,Y"
+                        "value": "0x10",
+                        "name": "PSX"
                     },
                     {
                         "value": "0x11",
-                        "name": "PSX (Digital DPAD)"
-                    },
-                    {
-                        "value": "0x13",
-                        "name": "PSX (Analog DPAD)"
+                        "name": "PSX Fast"
                     }
                 ]
             },
@@ -119,38 +111,30 @@
                     {
                         "value": "0x1C00",
                         "name": "SC HQ2x RGBHV"
+                    }
+                ]
+            },
+            {
+                "name": "Pocket LCD",
+                "id": 70,
+                "type": "list",
+                "enabled": true,
+                "persist": true,
+                "address": "0xF7000000",
+                "defaultval": 0,
+                "mask": "0xFFFCFFFF",
+                "options": [
+                    {
+                        "value": "0x00000000",
+                        "name": "On"
                     },
                     {
-                        "value": "0x2000",
-                        "name": "RGBS,Pocket OFF"
+                        "value": "0x00010000",
+                        "name": "Off"
                     },
                     {
-                        "value": "0x2400",
-                        "name": "RGsB,Pocket OFF"
-                    },
-                    {
-                        "value": "0x2800",
-                        "name": "YPbPr,Pocket OFF"
-                    },
-                    {
-                        "value": "0x2C00",
-                        "name": "Y/C NTSC,Pocket OFF"
-                    },
-                    {
-                        "value": "0x3000",
-                        "name": "Y/C PAL,Pocket OFF"
-                    },
-                    {
-                        "value": "0x3400",
-                        "name": "SC 0% RGBHV,Pocket OFF"
-                    },
-                    {
-                        "value": "0x3800",
-                        "name": "SC 50% RGBHV,Pocket OFF"
-                    },
-                    {
-                        "value": "0x3C00",
-                        "name": "SC HQ2x RGBHV,Pocket OFF"
+                        "value": "0x00020000",
+                        "name": "Terminal"
                     }
                 ]
             },
@@ -196,8 +180,14 @@
                 "defaultval": 0,
                 "mask": "0xFFFFFFFF",
                 "options": [
-                    { "value": "0x00", "name": "Off" },
-                    { "value": "0x01", "name": "On" }
+                    {
+                        "value": "0x00",
+                        "name": "Off"
+                    },
+                    {
+                        "value": "0x01",
+                        "name": "On"
+                    }
                 ]
             },
             {
@@ -226,9 +216,18 @@
                 "defaultval": 0,
                 "mask": "0xFFFFFFFF",
                 "options": [
-                    { "value": "0x00", "name": "Easy" },
-                    { "value": "0x01", "name": "Normal" },
-                    { "value": "0x02", "name": "Hard" }
+                    {
+                        "value": "0x00",
+                        "name": "Easy"
+                    },
+                    {
+                        "value": "0x01",
+                        "name": "Normal"
+                    },
+                    {
+                        "value": "0x02",
+                        "name": "Hard"
+                    }
                 ]
             }
         ],

@@ -47,8 +47,8 @@
  * Initially NULL; populated by the constructor below. Reading either
  * before the constructor runs is a bug -- the constructor priority
  * (101) ensures it runs before any other openfpgaOS code. */
-const struct of_capabilities *_of_caps_ptr = (void *)0;
-const struct of_services_table *_of_svc_ptr = (void *)0;
+const struct of_capabilities *_of_caps_ptr = NULL;
+const struct of_services_table *_of_svc_ptr = NULL;
 of_input_state_t _of_input_p0;
 of_input_state_t _of_input_p1;
 

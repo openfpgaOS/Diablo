@@ -82,6 +82,33 @@ typedef struct {
     uint8_t  colormap_id[8]; /* explicit slot per lane, including slot 0 */
 } of_gpu_affine_span_group_t;
 
+/* Vertical 1-wide textured columns (CMD_DRAW_COLUMN_LIST / 0x4C).  A column
+ * samples one texture column straight down, so the s (u) coordinate and its
+ * per-pixel step are always 0 and are NOT carried on the wire — only t (v) and
+ * tstep.  This is the bandwidth-optimised twin of of_gpu_affine_span_group():
+ * the produced framebuffer is BYTE-IDENTICAL to that group with s[i]=0 and
+ * sstep[i]=0, just with 5-word lane records instead of 7.
+ *
+ * fb_step is the byte step per pixel WITHIN each column (= stride for a
+ * top-to-bottom wall column).  Lanes are independent: there is no implicit
+ * per-lane fb_addr delta — each column carries its own fb_addr. */
+typedef struct {
+    uint8_t  lane_count;     /* 1..8; SDK splits to 4-lane native chunks */
+    uint8_t  flags;          /* OF_GPU_SPAN_* shared by all lanes */
+    uint8_t  reserved[2];
+    uint16_t tex_width;
+    uint16_t tex_w_mask;
+    uint16_t tex_h_mask;
+    int32_t  fb_step;        /* byte step per pixel down each column */
+    uint32_t fb_addr[8];
+    uint32_t tex_addr[8];
+    uint16_t count[8];
+    int32_t  t[8];           /* per-lane v origin (Q16.16) */
+    int32_t  tstep[8];       /* per-lane v step per pixel (Q16.16) */
+    uint8_t  light[8];       /* low 6 bits select palookup shade row */
+    uint8_t  colormap_id[8]; /* explicit slot per lane, including slot 0 */
+} of_gpu_column_list_group_t;
+
 typedef struct {
     uint32_t fb_addr;
     uint32_t tex_addr;
@@ -184,6 +211,14 @@ typedef struct {
     uint16_t height;
 } of_gpu_texture_t;
 
+/* Vertex for GPU_CMD_DRAW_PARAM_TRI (HW edge walker). */
+typedef struct {
+    int16_t x;   /* signed Q12.4 subpixel screen x */
+    int16_t y;   /* signed integer scanline */
+} of_gpu_tri_vert_t;
+
+#define OF_GPU_PARAM_TRI_WORDS 36u
+
 /* ================================================================
  * MMIO Registers
  * ================================================================ */
@@ -238,7 +273,26 @@ static uint32_t _gpu_base;
  * cycle, then publishes the fence token. */
 #define GPU_CMD_FLIP             0x42
 #define GPU_CMD_DRAW_PARAM_SPAN_LIST 0x48   /* unified affine/persp span command */
+#define GPU_CMD_SET_TRI_STATE        0x4A   /* sticky vert-tri surface state */
+#define GPU_CMD_DRAW_VERT_TRI        0x4B   /* raw-vertex triangle, HW plane derive */
+#define GPU_CMD_DRAW_PARAM_TRI       0x49   /* param-span header + 3 vertices;
+                                             * HW edge walker generates records */
 /* Command 0x49 is reserved; unsupported cores reject it as a no-op. */
+#define GPU_CMD_DRAW_COLUMN_LIST     0x4C   /* vertical 1-wide textured columns:
+                                             * same 4-word header as the 0x48
+                                             * direct-affine variant, but a
+                                             * 5-word lane record (drops the
+                                             * always-0 s and sstep words).
+                                             * Byte-identical pixels to a 0x48
+                                             * column with s=0/sstep=0; ~28% less
+                                             * command traffic.  Gate on
+                                             * of_has_feature(OF_HW_GPU_COLUMN_LIST). */
+
+#define OF_GPU_COLUMN_LIST_LANE_WORDS 5u
+#define OF_GPU_COLUMN_LIST_MAX_NATIVE_LANES 4u
+#define OF_GPU_COLUMN_LIST_MAX_LANES 8u
+#define OF_GPU_COLUMN_LIST_WORDS(lanes) \
+    (4u + ((uint32_t)(lanes) * OF_GPU_COLUMN_LIST_LANE_WORDS))
 
 #define OF_GPU_PERSP_SPAN_GROUP_MAX_LANES 8u
 #define OF_GPU_AFFINE_SPAN_GROUP_LANE_WORDS 7u
@@ -313,6 +367,11 @@ static uint32_t _gpu_batch_dma_base;
 static uint32_t _gpu_batch_dma_addr;
 static uint32_t _gpu_batch_index;
 static uint32_t _gpu_batch_inflight_mask;
+/* Set when a fence/flip token has been staged but not yet flushed —
+ * forces the next of_gpu_kick() to publish even below the lazy-kick
+ * threshold, so every "stage token, kick, poll token" pattern stays
+ * deadlock-free by construction. */
+static uint32_t _gpu_unflushed_sync;
 
 static const uint32_t _gpu_ring_mask = OF_GPU_RING_SIZE - 1;
 
@@ -374,6 +433,12 @@ static inline void _gpu_wait_dma_idle_debug(void) {
 }
 
 static inline void _gpu_wait_dma_desc_slot_debug(void) {
+    /* The descriptor FIFO is 2 deep and only our two staging buffers
+     * ever occupy it: with at most one batch inflight a slot is free by
+     * construction — skip the ~20-cycle uncached GPU_STATUS read. */
+    if ((_gpu_batch_inflight_mask & (_gpu_batch_inflight_mask - 1u)) == 0u)
+        return;
+
     uint32_t dma_spins = 0;
     while (GPU_STATUS & GPU_STATUS_DMA_DESC_FULL)
         dma_spins++;
@@ -460,6 +525,7 @@ static inline void _gpu_flush_cmd_stream(void) {
 
     _gpu_batch_inflight_mask |= (1u << submit_index);
     _gpu_cmd_words = 0;
+    _gpu_unflushed_sync = 0;
 
     uint32_t next_index = submit_index ^ 1u;
     if (_gpu_batch_inflight_mask & (1u << next_index))
@@ -513,6 +579,25 @@ static inline void _gpu_ring_write(uint32_t w) {
         __builtin_trap();
     _gpu_batch_buf[_gpu_cmd_words++] = w;
     _gpu_wrptr = (_gpu_wrptr + 4) & _gpu_ring_mask;
+}
+
+/* Bulk emission fast path.  _gpu_cmd_header/_gpu_stream_reserve_words
+ * already proved the buffer exists and the whole command fits, so the
+ * per-word guards and bookkeeping in _gpu_ring_write are pure overhead
+ * (~8 instructions/word) in the hot emitters.  claim() hands the caller
+ * the raw staging cursor; the caller writes exactly the words it
+ * reserved as plain sequential stores (~1 instruction/word) and
+ * commit() settles the bookkeeping once per command.
+ *
+ * RULES: only legal inside a reserved region; the committed count must
+ * equal the words actually written; never interleave with flushes. */
+static inline uint32_t *_gpu_ring_claim(void) {
+    return _gpu_batch_buf + _gpu_cmd_words;
+}
+
+static inline void _gpu_ring_commit(uint32_t words) {
+    _gpu_cmd_words += words;
+    _gpu_wrptr = (_gpu_wrptr + (words << 2)) & _gpu_ring_mask;
 }
 
 static inline void _gpu_cmd_header(uint8_t cmd, uint32_t payload_words) {
@@ -665,7 +750,26 @@ static inline void of_gpu_translucency_upload(const uint8_t *table, uint32_t siz
     _gpu_wait_transluc_idle();
 }
 
+/* Lazy-kick threshold: below this much staged data an advisory kick is
+ * a net loss — the flush pays a full cache clean + writeback drain +
+ * fences + an uncached doorbell sequence regardless of size, and
+ * engines that kick per-surface (hundreds of times a frame) were
+ * spending more CPU on flush overhead than on the commands themselves.
+ * A kick always publishes when a fence/flip token is staged, so any
+ * caller that waits after kicking is unaffected. */
+#ifndef OF_GPU_KICK_MIN_WORDS
+#define OF_GPU_KICK_MIN_WORDS 512u
+#endif
+
 static inline void of_gpu_kick(void) {
+    if (_gpu_cmd_words >= OF_GPU_KICK_MIN_WORDS || _gpu_unflushed_sync)
+        _gpu_flush_cmd_stream();
+}
+
+/* Unconditional publish — for callers that need the staged stream on
+ * its way NOW regardless of size (frame boundaries, before CPU FB
+ * access, debug). */
+static inline void of_gpu_kick_now(void) {
     _gpu_flush_cmd_stream();
 }
 
@@ -673,6 +777,7 @@ static inline uint32_t of_gpu_fence(void) {
     uint32_t token = _gpu_fence_next++;
     _gpu_cmd_header(GPU_CMD_FENCE, 1);
     _gpu_ring_write(token);
+    _gpu_unflushed_sync = 1;
     return token;
 }
 
@@ -697,6 +802,7 @@ static inline uint32_t of_gpu_flip_to(int idx) {
     _gpu_cmd_header(GPU_CMD_FLIP, 2);
     _gpu_ring_write((uint32_t)idx & 0x3u);
     _gpu_ring_write(token);
+    _gpu_unflushed_sync = 1;
     return token;
 }
 
@@ -905,25 +1011,92 @@ of_gpu_draw_affine_span_group(const of_gpu_affine_span_group_t *group) {
         if (any_pixels != 0) {
             _gpu_cmd_header(GPU_CMD_DRAW_PARAM_SPAN_LIST,
                             OF_GPU_PARAM_DIRECT_AFFINE_WORDS(chunk));
-            _gpu_ring_write((chunk << 28) |
-                            ((((uint32_t)group->flags & ~OF_GPU_SPAN_PERSP) & 0xFFu) << 20));
-            _gpu_ring_write((uint32_t)group->tex_width);
-            _gpu_ring_write(((uint32_t)group->tex_h_mask << 16) |
-                            (uint32_t)group->tex_w_mask);
-            _gpu_ring_write((uint32_t)group->fb_step);
+            uint32_t *w = _gpu_ring_claim();
+            *w++ = (chunk << 28) |
+                   ((((uint32_t)group->flags & ~OF_GPU_SPAN_PERSP) & 0xFFu) << 20);
+            *w++ = (uint32_t)group->tex_width;
+            *w++ = ((uint32_t)group->tex_h_mask << 16) |
+                   (uint32_t)group->tex_w_mask;
+            *w++ = (uint32_t)group->fb_step;
 
             for (uint32_t lane = 0; lane < chunk; lane++) {
                 uint32_t src = first + lane;
-                _gpu_ring_write(group->fb_addr[src]);
-                _gpu_ring_write(group->tex_addr[src]);
-                _gpu_ring_write((((uint32_t)group->colormap_id[src] & 0x0Fu) << 28) |
-                                (((uint32_t)group->light[src] & 0x3Fu) << 16) |
-                                (uint32_t)group->count[src]);
-                _gpu_ring_write((uint32_t)group->s[src]);
-                _gpu_ring_write((uint32_t)group->t[src]);
-                _gpu_ring_write((uint32_t)group->sstep[src]);
-                _gpu_ring_write((uint32_t)group->tstep[src]);
+                *w++ = group->fb_addr[src];
+                *w++ = group->tex_addr[src];
+                *w++ = (((uint32_t)group->colormap_id[src] & 0x0Fu) << 28) |
+                       (((uint32_t)group->light[src] & 0x3Fu) << 16) |
+                       (uint32_t)group->count[src];
+                *w++ = (uint32_t)group->s[src];
+                *w++ = (uint32_t)group->t[src];
+                *w++ = (uint32_t)group->sstep[src];
+                *w++ = (uint32_t)group->tstep[src];
             }
+            _gpu_ring_commit(4u + 7u * chunk);
+        }
+
+        first += chunk;
+    }
+}
+
+static inline uint32_t _gpu_column_group_lane_count(uint32_t lane_count) {
+    if (lane_count > OF_GPU_COLUMN_LIST_MAX_LANES)
+        return OF_GPU_COLUMN_LIST_MAX_LANES;
+    return lane_count;
+}
+
+/* Emit a CMD_DRAW_COLUMN_LIST (0x4C) group: vertical 1-wide textured columns
+ * with 5-word lane records (no s/sstep — always 0 for columns).  Mirrors
+ * of_gpu_draw_affine_span_group() exactly (same 4-word header, same chunking,
+ * same colormap/light/count packing), just dropping the two constant-zero
+ * words per lane.  The result is byte-identical to that group with s=0/sstep=0.
+ *
+ * Callers should gate availability on of_has_feature(OF_HW_GPU_COLUMN_LIST)
+ * and fall back to of_gpu_draw_affine_span_group() (s/sstep=0) on cores that
+ * do not advertise the bit. */
+static inline void
+of_gpu_draw_column_list(const of_gpu_column_list_group_t *group) {
+    uint32_t lane_count;
+
+    if (group == NULL)
+        return;
+
+    lane_count = _gpu_column_group_lane_count(group->lane_count);
+    if (lane_count == 0)
+        return;
+
+    for (uint32_t first = 0; first < lane_count;) {
+        uint32_t chunk = lane_count - first;
+        uint32_t any_pixels = 0;
+        if (chunk > OF_GPU_COLUMN_LIST_MAX_NATIVE_LANES)
+            chunk = OF_GPU_COLUMN_LIST_MAX_NATIVE_LANES;
+
+        for (uint32_t i = 0; i < chunk; i++)
+            any_pixels |= group->count[first + i];
+
+        if (any_pixels != 0) {
+            _gpu_cmd_header(GPU_CMD_DRAW_COLUMN_LIST,
+                            OF_GPU_COLUMN_LIST_WORDS(chunk));
+            uint32_t *w = _gpu_ring_claim();
+            /* Same 4-word header as the 0x48 direct-affine variant. */
+            *w++ = (chunk << 28) |
+                   ((((uint32_t)group->flags & ~OF_GPU_SPAN_PERSP) & 0xFFu) << 20);
+            *w++ = (uint32_t)group->tex_width;
+            *w++ = ((uint32_t)group->tex_h_mask << 16) |
+                   (uint32_t)group->tex_w_mask;
+            *w++ = (uint32_t)group->fb_step;
+
+            for (uint32_t lane = 0; lane < chunk; lane++) {
+                uint32_t src = first + lane;
+                /* 5-word lane record: drop s (+3) and sstep (+5) vs 0x48. */
+                *w++ = group->fb_addr[src];
+                *w++ = group->tex_addr[src];
+                *w++ = (((uint32_t)group->colormap_id[src] & 0x0Fu) << 28) |
+                       (((uint32_t)group->light[src] & 0x3Fu) << 16) |
+                       (uint32_t)group->count[src];
+                *w++ = (uint32_t)group->t[src];
+                *w++ = (uint32_t)group->tstep[src];
+            }
+            _gpu_ring_commit(4u + 5u * chunk);
         }
 
         first += chunk;
@@ -1009,6 +1182,48 @@ of_gpu_draw_persp_span_group_batch(const of_gpu_persp_span_group_t *spans,
         of_gpu_draw_persp_span_group(&spans[i]);
 }
 
+/* Words 0-30 shared by GPU_CMD_DRAW_PARAM_SPAN_LIST and
+ * GPU_CMD_DRAW_PARAM_TRI: planes, control, clamps, z, record count and
+ * the optional Q29 dynamic scale. */
+static inline void
+_gpu_emit_param_span_header_words(const of_gpu_param_span_list_t *p,
+                                  uint32_t control,
+                                  uint32_t record_count,
+                                  uint32_t q29_attr_shift) {
+    /* 31 words inside the caller's reservation — raw stores. */
+    uint32_t *w = _gpu_ring_claim();
+    *w++ = p->fb_base;
+    *w++ = (uint32_t)p->fb_major_step;
+    *w++ = (uint32_t)p->fb_minor_step;
+    *w++ = p->tex_addr;
+    *w++ = (uint32_t)p->tex_width;
+    *w++ = (uint32_t)p->tex_w_mask;
+    *w++ = (uint32_t)p->tex_h_mask;
+    *w++ = control;
+
+    for (uint32_t i = 0; i < 3; i++) {
+        *w++ = (uint32_t)p->attr_origin[i];
+        *w++ = (uint32_t)p->attr_du[i];
+        *w++ = (uint32_t)p->attr_dv[i];
+    }
+
+    *w++ = (uint32_t)p->light_origin;
+    *w++ = (uint32_t)p->light_du;
+    *w++ = (uint32_t)p->light_dv;
+
+    for (uint32_t i = 0; i < 3; i++) {
+        *w++ = (uint32_t)p->clamp_min[i];
+        *w++ = (uint32_t)p->clamp_max[i];
+    }
+
+    *w++ = p->z_base;
+    *w++ = (uint32_t)p->z_major_step;
+    *w++ = (uint32_t)p->z_minor_step;
+    *w++ = record_count;
+    *w++ = q29_attr_shift;
+    _gpu_ring_commit(31u);
+}
+
 static inline void
 _gpu_emit_param_span_list(const of_gpu_param_span_list_t *p,
                           const of_gpu_param_span_record_t *records,
@@ -1043,48 +1258,28 @@ _gpu_emit_param_span_list(const of_gpu_param_span_list_t *p,
 
     _gpu_cmd_header(GPU_CMD_DRAW_PARAM_SPAN_LIST,
                     OF_GPU_PARAM_SPAN_LIST_WORDS(record_count));
-    _gpu_ring_write(p->fb_base);
-    _gpu_ring_write((uint32_t)p->fb_major_step);
-    _gpu_ring_write((uint32_t)p->fb_minor_step);
-    _gpu_ring_write(p->tex_addr);
-    _gpu_ring_write((uint32_t)p->tex_width);
-    _gpu_ring_write((uint32_t)p->tex_w_mask);
-    _gpu_ring_write((uint32_t)p->tex_h_mask);
-    _gpu_ring_write(control);
+    _gpu_emit_param_span_header_words(p, control, record_count,
+                                      q29_attr_shift);
 
-    for (uint32_t i = 0; i < 3; i++) {
-        _gpu_ring_write((uint32_t)p->attr_origin[i]);
-        _gpu_ring_write((uint32_t)p->attr_du[i]);
-        _gpu_ring_write((uint32_t)p->attr_dv[i]);
-    }
-
-    _gpu_ring_write((uint32_t)p->light_origin);
-    _gpu_ring_write((uint32_t)p->light_du);
-    _gpu_ring_write((uint32_t)p->light_dv);
-
-    for (uint32_t i = 0; i < 3; i++) {
-        _gpu_ring_write((uint32_t)p->clamp_min[i]);
-        _gpu_ring_write((uint32_t)p->clamp_max[i]);
-    }
-
-    _gpu_ring_write(p->z_base);
-    _gpu_ring_write((uint32_t)p->z_major_step);
-    _gpu_ring_write((uint32_t)p->z_minor_step);
-    _gpu_ring_write(record_count);
-    _gpu_ring_write(q29_attr_shift);
-
-    for (uint32_t i = 0; i < record_count; i += 2) {
-        const of_gpu_param_span_record_t *a = &records[i];
-        of_gpu_param_span_record_t b;
-        if (i + 1u < record_count) {
-            b = records[i + 1u];
-        } else {
-            memset(&b, 0, sizeof(b));
+    {
+        /* Record pairs as raw sequential stores; the odd tail pairs with
+         * an implicit zero record (same wire bytes as before). */
+        uint32_t *w = _gpu_ring_claim();
+        uint32_t pairs = record_count >> 1;
+        for (uint32_t i = 0; i < pairs; i++) {
+            const of_gpu_param_span_record_t *a = &records[2u * i];
+            const of_gpu_param_span_record_t *b = a + 1;
+            *w++ = ((uint32_t)a->v << 16) | (uint32_t)a->u;
+            *w++ = ((uint32_t)b->u << 16) | (uint32_t)a->count;
+            *w++ = ((uint32_t)b->count << 16) | (uint32_t)b->v;
         }
-
-        _gpu_ring_write(((uint32_t)a->v << 16) | (uint32_t)a->u);
-        _gpu_ring_write(((uint32_t)b.u << 16) | (uint32_t)a->count);
-        _gpu_ring_write(((uint32_t)b.count << 16) | (uint32_t)b.v);
+        if (record_count & 1u) {
+            const of_gpu_param_span_record_t *a = &records[record_count - 1u];
+            *w++ = ((uint32_t)a->v << 16) | (uint32_t)a->u;
+            *w++ = (uint32_t)a->count;
+            *w++ = 0u;
+        }
+        _gpu_ring_commit(3u * ((record_count + 1u) >> 1));
     }
 }
 
@@ -1104,6 +1299,169 @@ of_gpu_draw_param_span_list(const of_gpu_param_span_list_t *params,
 
     if (any_pixels != 0)
         _gpu_emit_param_span_list(params, records, record_count);
+}
+
+/* GPU_CMD_DRAW_PARAM_TRI — hardware edge walker.
+ * Same plane/control/z header as the span list, but the per-scanline
+ * {u,v,count} records are generated by the GPU from three vertices.
+ * Vertices: x is signed Q12.4 subpixel, y is a signed integer scanline.
+ * The walker clips to [clip_x0, clip_x1) x [clip_y0, clip_y1) with ceil
+ * fill on both edges (left-closed, right-open).  Gate on
+ * OF_HW_GPU_PARAM_TRI before relying on this path. */
+static inline void
+of_gpu_draw_param_tri(const of_gpu_param_span_list_t *p,
+                      const of_gpu_tri_vert_t v[3],
+                      int16_t clip_x0, int16_t clip_x1,
+                      int16_t clip_y0, int16_t clip_y1) {
+    uint32_t control;
+    uint32_t q29_attr_shift = 0;
+
+    if (p == NULL || v == NULL)
+        return;
+    if (clip_x0 >= clip_x1 || clip_y0 >= clip_y1)
+        return;
+    if (p->z_mode != OF_GPU_PARAM_Z_NONE
+        && p->z_mode != OF_GPU_PARAM_Z_WRITE_ZI
+        && p->z_mode != OF_GPU_PARAM_Z_TEST_ZI
+        && p->z_mode != OF_GPU_PARAM_Z_TEST_WRITE)
+        return;
+#ifndef OF_PC
+    if (!of_has_feature(OF_HW_GPU_PARAM_TRI))
+        return;
+#endif
+    if (p->attr_mode == OF_GPU_PARAM_ATTR_PERSP_Q29) {
+        q29_attr_shift = (uint32_t)p->q29_attr_shift & 31u;
+#ifndef OF_PC
+        if (q29_attr_shift != 0u
+            && !of_has_feature(OF_HW_GPU_PARAM_SPAN_Q29_SCALE))
+            return;
+#endif
+    }
+
+    control = ((uint32_t)p->flags & 0xFFu)
+            | (((uint32_t)p->colormap_id & 0x0Fu) << 8)
+            | (((uint32_t)p->attr_mode & 0x0Fu) << 12)
+            | (((uint32_t)p->span_axis & 0x0Fu) << 16)
+            | ((uint32_t)OF_GPU_PARAM_RECORD_U16V16_COUNT16 << 20)
+            | (((uint32_t)p->z_mode & 0x0Fu) << 24);
+
+    _gpu_cmd_header(GPU_CMD_DRAW_PARAM_TRI, OF_GPU_PARAM_TRI_WORDS);
+    _gpu_emit_param_span_header_words(p, control, 0u, q29_attr_shift);
+    _gpu_ring_write(((uint32_t)(uint16_t)clip_x1 << 16)
+                  | (uint32_t)(uint16_t)clip_x0);
+    _gpu_ring_write(((uint32_t)(uint16_t)clip_y1 << 16)
+                  | (uint32_t)(uint16_t)clip_y0);
+    _gpu_ring_write(((uint32_t)(uint16_t)v[0].y << 16)
+                  | (uint32_t)(uint16_t)v[0].x);
+    _gpu_ring_write(((uint32_t)(uint16_t)v[1].y << 16)
+                  | (uint32_t)(uint16_t)v[1].x);
+    _gpu_ring_write(((uint32_t)(uint16_t)v[2].y << 16)
+                  | (uint32_t)(uint16_t)v[2].x);
+}
+
+/* ================================================================
+ * Hardware plane derivation (CMD_SET_TRI_STATE / CMD_DRAW_VERT_TRI)
+ *
+ * The GPU derives the four perspective planes (s*zi, t*zi, zi, light)
+ * from raw per-vertex values — no client-side 2x2 solve, no bbox
+ * rebase, no Q29 sliver escalation.  Set the sticky surface state once
+ * per texture/skin, then stream 14-word triangles.  Gate on
+ * of_has_feature(OF_HW_GPU_VERT_TRI); CMD_DRAW_PARAM_TRI (0x49) stays
+ * as the fallback for bitstreams without it.
+ * ================================================================ */
+
+typedef struct {
+    uint32_t fb_base;
+    int32_t  fb_major_step;
+    int32_t  fb_minor_step;
+
+    uint32_t tex_addr;
+    uint16_t tex_width;
+    uint16_t tex_w_mask;
+    uint16_t tex_h_mask;
+
+    uint8_t  flags;          /* OF_GPU_SPAN_* (PERSP implied) */
+    uint8_t  colormap_id;
+    uint8_t  z_mode;         /* OF_GPU_PARAM_Z_* */
+
+    int32_t  clamp_min[2];   /* s, t (0/0 = disabled, as 0x49) */
+    int32_t  clamp_max[2];
+
+    uint32_t z_base;
+    int32_t  z_major_step;
+    int32_t  z_minor_step;
+
+    int16_t  clip_x0, clip_x1;   /* [x0, x1) x [y0, y1) */
+    int16_t  clip_y0, clip_y1;
+} of_gpu_tri_state_t;
+
+static inline void of_gpu_set_tri_state(const of_gpu_tri_state_t *st) {
+    if (st == NULL)
+        return;
+#ifndef OF_PC
+    if (!of_has_feature(OF_HW_GPU_VERT_TRI))
+        return;
+#endif
+    if (st->z_mode != OF_GPU_PARAM_Z_NONE
+        && st->z_mode != OF_GPU_PARAM_Z_WRITE_ZI
+        && st->z_mode != OF_GPU_PARAM_Z_TEST_ZI
+        && st->z_mode != OF_GPU_PARAM_Z_TEST_WRITE)
+        return;
+
+    /* w6 control mirrors 0x49 header word 7; attr_mode is PERSP and the
+     * span axis X by construction of the derived planes. */
+    uint32_t control = ((uint32_t)st->flags & 0xFFu)
+                     | (((uint32_t)st->colormap_id & 0x0Fu) << 8)
+                     | ((uint32_t)OF_GPU_PARAM_ATTR_PERSP << 12)
+                     | ((uint32_t)OF_GPU_PARAM_AXIS_X << 16)
+                     | ((uint32_t)OF_GPU_PARAM_RECORD_U16V16_COUNT16 << 20)
+                     | (((uint32_t)st->z_mode & 0x0Fu) << 24);
+
+    _gpu_cmd_header(GPU_CMD_SET_TRI_STATE, 16);
+    uint32_t *w = _gpu_ring_claim();
+    *w++ = st->fb_base;
+    *w++ = (uint32_t)st->fb_major_step;
+    *w++ = (uint32_t)st->fb_minor_step;
+    *w++ = st->tex_addr;
+    *w++ = (uint32_t)st->tex_width;
+    *w++ = ((uint32_t)st->tex_h_mask << 16) | (uint32_t)st->tex_w_mask;
+    *w++ = control;
+    *w++ = (uint32_t)st->clamp_min[0];
+    *w++ = (uint32_t)st->clamp_max[0];
+    *w++ = (uint32_t)st->clamp_min[1];
+    *w++ = (uint32_t)st->clamp_max[1];
+    *w++ = st->z_base;
+    *w++ = (uint32_t)st->z_major_step;
+    *w++ = (uint32_t)st->z_minor_step;
+    *w++ = ((uint32_t)(uint16_t)st->clip_x1 << 16) | (uint16_t)st->clip_x0;
+    *w++ = ((uint32_t)(uint16_t)st->clip_y1 << 16) | (uint16_t)st->clip_y0;
+    _gpu_ring_commit(16u);
+}
+
+/* One triangle: x[] in signed Q12.4 subpixels, y[] integer scanlines,
+ * s/t/zi[] signed Q16.16 RAW per-vertex values (the GPU forms s*zi and
+ * t*zi itself), light[] Q6 integer rows (0..63). */
+static inline void of_gpu_draw_vert_tri(const int16_t x[3], const int16_t y[3],
+                                        const int32_t s[3], const int32_t t[3],
+                                        const int32_t zi[3],
+                                        const uint8_t light[3]) {
+#ifndef OF_PC
+    if (!of_has_feature(OF_HW_GPU_VERT_TRI))
+        return;
+#endif
+    _gpu_cmd_header(GPU_CMD_DRAW_VERT_TRI, 14);
+    uint32_t *w = _gpu_ring_claim();
+    *w++ = ((uint32_t)(uint16_t)y[0] << 16) | (uint16_t)x[0];
+    *w++ = ((uint32_t)(uint16_t)y[1] << 16) | (uint16_t)x[1];
+    *w++ = ((uint32_t)(uint16_t)y[2] << 16) | (uint16_t)x[2];
+    *w++ = (uint32_t)s[0]; *w++ = (uint32_t)s[1]; *w++ = (uint32_t)s[2];
+    *w++ = (uint32_t)t[0]; *w++ = (uint32_t)t[1]; *w++ = (uint32_t)t[2];
+    *w++ = (uint32_t)zi[0]; *w++ = (uint32_t)zi[1]; *w++ = (uint32_t)zi[2];
+    *w++ = (((uint32_t)light[2] & 0x3Fu) << 12)
+         | (((uint32_t)light[1] & 0x3Fu) << 6)
+         |  ((uint32_t)light[0] & 0x3Fu);
+    *w++ = 0u;
+    _gpu_ring_commit(14u);
 }
 
 /* Submit an already-encoded command stream through the doorbell-DMA path.
@@ -1134,7 +1492,88 @@ static inline void of_gpu_submit_command_stream_batch(const uint32_t *words,
     _gpu_flush_cmd_stream();
 }
 
-#endif /* !OF_PC */
+#else /* OF_PC — desktop has no HW GPU; provide no-op stubs so apps that
+       *         exercise the GPU API still link in the SDL2 test build. */
+
+typedef struct {
+    uint32_t status, rdptr, wrptr, fence_reached;
+    uint32_t dma_waits, dma_spin_iters;
+    uint32_t ring_waits, ring_spin_iters;
+    uint32_t min_ring_free, ring_free;
+} of_gpu_debug_snapshot_t;
+
+static inline void     of_gpu_init(void)                                  {}
+static inline void     of_gpu_shutdown(void)                              {}
+static inline void     of_gpu_kick(void)                                  {}
+static inline void     of_gpu_kick_now(void)                              {}
+static inline void     of_gpu_set_tri_state(const of_gpu_tri_state_t *s)  { (void)s; }
+static inline void     of_gpu_draw_vert_tri(const int16_t x[3], const int16_t y[3],
+                                            const int32_t s[3], const int32_t t[3],
+                                            const int32_t zi[3], const uint8_t l[3])
+                                            { (void)x;(void)y;(void)s;(void)t;(void)zi;(void)l; }
+static inline uint32_t of_gpu_fence(void)                                 { return 0; }
+static inline uint32_t of_gpu_submit(void)                                { return 0; }
+static inline int      of_gpu_fence_reached(uint32_t t)                   { (void)t; return 1; }
+static inline void     of_gpu_wait(uint32_t t)                            { (void)t; }
+static inline void     of_gpu_finish(void)                                {}
+static inline void     of_gpu_prepare_framebuffer_for_cpu(void)           {}
+static inline uint32_t of_gpu_flip_to(int idx)                            { (void)idx; return 0; }
+
+static inline void of_gpu_palookup_upload(uint8_t slot, const uint8_t *data,
+                                          uint32_t size) {
+    (void)slot; (void)data; (void)size;
+}
+static inline void of_gpu_translucency_upload(const uint8_t *table, uint32_t size) {
+    (void)table; (void)size;
+}
+static inline void of_gpu_set_framebuffer(uint32_t addr, uint16_t stride) {
+    (void)addr; (void)stride;
+}
+static inline void of_gpu_bind_texture(const of_gpu_texture_t *tex)       { (void)tex; }
+static inline void of_gpu_clear(uint32_t flags, uint16_t color)           { (void)flags; (void)color; }
+static inline void of_gpu_clear_rect(uint32_t addr, uint16_t w, uint16_t h,
+                                     uint8_t color) {
+    (void)addr; (void)w; (void)h; (void)color;
+}
+static inline void of_gpu_clear_rect_strided(uint32_t addr, uint16_t w,
+                                             uint16_t h, uint16_t stride,
+                                             uint8_t color) {
+    (void)addr; (void)w; (void)h; (void)stride; (void)color;
+}
+static inline void of_gpu_draw_affine_span_group(const of_gpu_affine_span_group_t *g) {
+    (void)g;
+}
+static inline void of_gpu_draw_column_list(const of_gpu_column_list_group_t *g) {
+    (void)g;
+}
+static inline void of_gpu_draw_persp_span_group(const of_gpu_persp_span_group_t *g) {
+    (void)g;
+}
+static inline void of_gpu_draw_persp_span_group_batch(const of_gpu_persp_span_group_t *spans,
+                                                      int count) {
+    (void)spans; (void)count;
+}
+static inline void of_gpu_draw_param_tri(const of_gpu_param_span_list_t *p,
+                                         const of_gpu_tri_vert_t v[3],
+                                         int16_t clip_x0, int16_t clip_x1,
+                                         int16_t clip_y0, int16_t clip_y1) {
+    (void)p; (void)v;
+    (void)clip_x0; (void)clip_x1; (void)clip_y0; (void)clip_y1;
+}
+static inline void of_gpu_submit_command_stream_batch(const uint32_t *words, int count) {
+    (void)words; (void)count;
+}
+static inline void of_gpu_debug_snapshot(of_gpu_debug_snapshot_t *snap, int reset) {
+    (void)reset;
+    if (snap) {
+        snap->status = snap->rdptr = snap->wrptr = snap->fence_reached = 0;
+        snap->dma_waits = snap->dma_spin_iters = 0;
+        snap->ring_waits = snap->ring_spin_iters = 0;
+        snap->min_ring_free = snap->ring_free = 0;
+    }
+}
+
+#endif /* OF_PC */
 
 #ifdef __cplusplus
 }

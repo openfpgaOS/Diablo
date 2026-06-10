@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * cray — software ray tracer
  *
@@ -10,7 +16,7 @@
  *     or filesystem paths beyond the slot:N convention
  *
  * Source is John Tsiombikas's c-ray-1.1 with minimal openfpgaOS glue.
- * The renderer reads a scene from slot:3 (or built-in default) and
+ * The renderer reads a scene from slot:4 (or built-in default) and
  * writes a PPM to UART, which a host capture script can save.  Useful
  * as a baseline for "how fast is the CPU when not waiting for HW".
  *
@@ -80,13 +86,8 @@ unsigned long get_msec(void);
 
 /* bit-shift ammount for packing each color into a 32bit uint */
 #ifdef LITTLE_ENDIAN
-#define RSHIFT	16
-#define BSHIFT	0
 #else	/* big endian */
-#define RSHIFT	0
-#define BSHIFT	16
 #endif	/* endianess */
-#define GSHIFT	8	/* this is the same in both byte orders */
 
 /* some helpful macros... */
 #define SQ(x)		((x) * (x))
@@ -366,7 +367,6 @@ struct ray get_primary_ray(int x, int y, int sample) {
 struct vec3 get_sample_pos(int x, int y, int sample) {
 	(void)sample;
 	struct vec3 pt;
-	/*float xsz = 2.0, ysz = xres / aspect;*/
 	static float sf = 0.0;
 
 	if(sf == 0.0) {

@@ -85,10 +85,9 @@ openfgpaSDK/
 │   │   └── instance.json    ← your app's data slot mapping
 │   ├── sdk/                 ← SDK (don't edit)
 │   │   ├── include/         ← openfpgaOS API (of.h, of_video.h, ...)
-│   │   ├── libc/            ← C standard library
+│   │   ├── musl/            ← bundled musl C library + linker script
 │   │   ├── platforms/       ← platform templates & copy scripts
 │   │   │   └── pocket/      ← Analogue Pocket target
-│   │   └── crt/             ← startup code & linker script
 │   └── apps/                ← bundled demo apps (reference code)
 ├── dist/sdk/                ← SDK core configs (SDK-owned, auto-deployed)
 ├── runtime/                 ← FPGA bitstream, OS binary, loader
@@ -214,5 +213,5 @@ Core configs, runtime binaries, and SDK headers update automatically. Your app's
 ## Next steps
 
 - Browse `src/apps/` for example code (raytracer, Celeste, MIDI player, ...)
-- Run `make demos` from the repo root to build all demo apps
+- Run `make` from `src/apps/` to build all demo apps
 - See [README.md](README.md) for the full API reference, UART development, and advanced topics

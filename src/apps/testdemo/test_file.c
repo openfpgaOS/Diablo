@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 #include "test.h"
 #include <time.h>
 
@@ -797,14 +803,16 @@ void test_oversize_read(void) {
         fclose(f);
     }
 
-    /* slot:2 = testdemo.elf (~40KB). Request 256KB — bigger overshoot.
-     * This is closer to the mididemo scenario (5.8KB file, 256KB request). */
-    f = fopen("slot:2", "rb");
-    ASSERT("open slot:2", f != NULL);
+    /* slot:3 = testdemo.elf (~240KB). Request 256KB — bigger overshoot.
+     * This is closer to the mididemo scenario (5.8KB file, 256KB request).
+     * (slot:2 is now os.ini under the APF_VER_1 contract; the ELF moved
+     * to slot:3.) */
+    f = fopen("slot:3", "rb");
+    ASSERT("open slot:3", f != NULL);
     if (f) {
         size_t n = fread(big, 1, 262144, f);
-        ASSERT("slot:2 data", n >= 1024);
-        snprintf(__buf, sizeof(__buf), "slot:2=%d", (int)n);
+        ASSERT("slot:3 data", n >= 1024);
+        snprintf(__buf, sizeof(__buf), "slot:3=%d", (int)n);
         test_pass(__buf);
         fclose(f);
     }

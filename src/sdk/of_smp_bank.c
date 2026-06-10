@@ -12,7 +12,13 @@
  * file copies the metadata (header + presets + zones) into SDRAM so the
  * app can keep compact, writable metadata while sample data remains in
  * the preloaded SDRAM bank read by the mixer.
+ *
+ * Bank loading is hardware-only (the kernel side of the preload doesn't
+ * exist on PC).  On OF_PC the file collapses to stubs at the bottom so
+ * apps that pull it in for desktop testing still link.
  */
+
+#ifndef OF_PC
 
 #include "include/of_smp_bank.h"
 #include "include/of_services.h"
@@ -130,3 +136,20 @@ int of_smp_zone_lookup(int bank, int program, int key, int velocity,
     }
     return found;
 }
+
+#else /* OF_PC — desktop has no preloaded bank; bind returns failure */
+
+#include "include/of_smp_bank.h"
+
+const ofsf_header_t *of_smp_bank_get(void)         { return 0; }
+const void          *of_smp_bank_sample_base(void) { return 0; }
+int                  of_smp_bank_bind_preloaded(void) { return -1; }
+
+int of_smp_zone_lookup(int bank, int program, int key, int velocity,
+                       const ofsf_zone_t **zones_out, int max_zones) {
+    (void)bank; (void)program; (void)key; (void)velocity;
+    (void)zones_out; (void)max_zones;
+    return 0;
+}
+
+#endif /* OF_PC */

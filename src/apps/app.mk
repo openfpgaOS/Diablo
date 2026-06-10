@@ -1,3 +1,9 @@
+#------------------------------------------------------------------------------
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileType: SOURCE
+# SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+#------------------------------------------------------------------------------
+
 # openfpgaOS SDK — Per SDK app build rules
 #
 # Included by each src/apps/<name>/Makefile. Drives the SDK app build

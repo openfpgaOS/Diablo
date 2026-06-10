@@ -45,6 +45,15 @@ typedef uint64_t of_mixer_handle_t;
 #define OF_MIXER_RATE_FP16(hz) \
     ((uint32_t)(((uint64_t)(hz) << 16) / OF_MIXER_OUTPUT_RATE))
 
+/* Volume groups (constants, shared by both branches — the PC stub backend
+ * uses them too so apps can compile against the same group symbols).
+ * Groups: OF_MIXER_GROUP_SFX (0), OF_MIXER_GROUP_MUSIC (1),
+ *         OF_MIXER_GROUP_VOICE (2), OF_MIXER_GROUP_AUX (3). */
+#define OF_MIXER_GROUP_SFX   0
+#define OF_MIXER_GROUP_MUSIC 1
+#define OF_MIXER_GROUP_VOICE 2
+#define OF_MIXER_GROUP_AUX   3
+
 #ifndef OF_PC
 
 #include "of_services.h"
@@ -289,14 +298,7 @@ static inline void of_mixer_set_end_callback(void (*cb)(uint32_t ended_mask)) {
     OF_SVC->mixer_set_end_callback(cb);
 }
 
-/* Volume groups: assign voices to groups, control group and master volume.
- * Groups: OF_MIXER_GROUP_SFX (0), OF_MIXER_GROUP_MUSIC (1),
- *         OF_MIXER_GROUP_VOICE (2), OF_MIXER_GROUP_AUX (3). */
-#define OF_MIXER_GROUP_SFX   0
-#define OF_MIXER_GROUP_MUSIC 1
-#define OF_MIXER_GROUP_VOICE 2
-#define OF_MIXER_GROUP_AUX   3
-
+/* Volume group constants live above the OF_PC fence — see top of file. */
 static inline void of_mixer_set_group(int voice, int group) {
     OF_SVC->mixer_set_group(voice, group);
 }

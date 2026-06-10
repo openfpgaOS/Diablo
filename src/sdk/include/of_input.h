@@ -126,6 +126,7 @@ static inline void of_input_set_deadzone(int16_t deadzone) {
 #else /* OF_PC */
 
 void     of_input_poll(void);
+void     of_input_poll_p0(void);
 int      of_btn(uint32_t mask);
 int      of_btn_pressed(uint32_t mask);
 int      of_btn_released(uint32_t mask);

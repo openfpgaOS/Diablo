@@ -30,8 +30,6 @@
 /* Forward declaration; definition is further down once the static helpers
  * it uses (audio_lock, g_voice_open, OF_OUT_RATE) are in scope. */
 extern "C" void of_aulib_ensure_hw_mixer_inited(void);
-/* OS file-read idle hook; defined after the pump, registered in init(). */
-extern "C" void of_aulib_idle_pump(void);
 
 #define DR_WAV_IMPLEMENTATION
 #define DR_WAV_NO_STDIO
@@ -42,10 +40,13 @@ extern "C" void of_aulib_idle_pump(void);
 
 #define OF_OUT_RATE 48000
 #define OF_MIX_BLOCK 1024
-#define OF_READAHEAD_REFILL_FRAMES 1024
-#ifndef OF_AUDIO_FIFO
-#define OF_AUDIO_FIFO 1024
-#endif
+/* Per-pump fill cap (stereo pairs). After a stall the (~1.37 s) OS ring is
+ * nearly empty; refilling it all in one pump would decode over a second of
+ * music in a single frame. ~85 ms per pump never binds in steady state
+ * (per-frame drain is ~800-1600 pairs at 30-60 fps) and spreads a post-stall
+ * refill over a few frames. The HW stream voice holds at the write pointer,
+ * so a partially-refilled ring is always safe. */
+#define OF_PUMP_FILL_CAP_PAIRS 4096
 /* The OS streaming voice index (targets/pocket/audio.c AUDIO_VOICE): music is
  * software-mixed into this HW mixer voice's ring. */
 #define OF_AUDIO_RING_VOICE 31
@@ -58,34 +59,17 @@ extern "C" void of_aulib_idle_pump(void);
  * is silenced. Tune on HW if the click persists (slower ramp / longer wait). */
 #define OF_AUDIO_FADE_RAMP 4
 #define OF_AUDIO_FADE_US   12000
-/* Reset voice 31 only when the OS PCM ring is within this many pairs of
- * completely empty (a real underrun), never on ordinary mid-frame drain. */
-#define OF_UNDERRUN_FREE_GRACE 64
 
 static bool g_inited = false;
 static int  g_frameSize = OF_MIX_BLOCK;
-/* Real OS PCM ring depth (pairs), measured once at init (Pocket: 2048 / ~42 ms;
- * the OS ring is NOT OF_AUDIO_FIFO=1024 -- that constant is the downstream HW
- * dcfifo). The underrun reset fires only when of_audio_free() is within
- * OF_UNDERRUN_FREE_GRACE of this depth. Fallback used until init measures it. */
-static int  g_ring_capacity = OF_AUDIO_FIFO;
-static int  g_underrun_reset_free = OF_AUDIO_FIFO;
 static bool g_output_suspended = false;
 static unsigned g_output_suspend_depth = 0;
-/* Set while the OS file-read idle hook (of_aulib_idle_pump) is feeding the ring
- * from inside a blocking SD read: tells mixInto/nextFrame to mix ONLY from each
- * stream's already-decoded readahead and never touch the SD. An empty readahead
- * then becomes silence with the stream kept alive, not a false end-of-stream. */
-static volatile bool g_audio_no_sd = false;
 static bool g_hw_mixer_inited = false;
-static volatile uint32_t g_silence_idle_ticks = 0;
-static const uint32_t SILENCE_STALE_TICKS     = 4; /* @60 Hz -> ~67 ms, > 42 ms ring */
 /* Track whether the 48 kHz PCM ring has been started through
  * of_audio_write(). Do not call of_audio_stream_open(48000): ScummVM hit
  * audible resonance/vibrato from that path, and the OS already configures
  * voice 31 for 1:1 48 kHz playback on the first of_audio_write(). */
 static bool g_voice_open = false;
-static bool g_voice_has_written = false;
 static bool g_voice_log_printed = false;
 /* Forward declaration -- defined further down with the stream registry. */
 static std::vector<Aulib::Stream *> &ActiveStreams();
@@ -106,8 +90,6 @@ static void silence_voice_locked(void) {
 	 * of_audio_stream_open(). */
 	of_audio_init();
 	g_voice_open = false;
-	g_voice_has_written = false;
-	g_silence_idle_ticks = 0;
 }
 static void close_voice_if_idle(void) {
 	if (!g_voice_open) return;
@@ -125,44 +107,19 @@ static void fade_ring_voice_and_wait(void) {
 	of_mixer_set_volume(OF_AUDIO_RING_VOICE, 0);
 	usleep(OF_AUDIO_FADE_US);
 }
-static void reset_stale_voice_if_underrun(int &freePairs)
-{
-	if (!g_voice_has_written) return;
-	if (freePairs < g_underrun_reset_free) return;
-	/* The OS ring is effectively empty (a true underrun): voice 31 has been
-	 * replaying the tail of the last block while the main loop was blocked.
-	 * Reset it before queuing fresh PCM so old samples cannot keep looping.
-	 * NOTE this is a band-aid: of_audio_init() zeroes the ring (uncached
-	 * stores), so it is NOT free -- the real fix is to not underrun (see the
-	 * ring-size note in init()). */
-	silence_voice_locked();
-	ensure_voice_open();
-	freePairs = of_audio_free();
-}
+/* Underrun handling lives in HARDWARE now: voice 31 runs in the mixer's
+ * stream mode (audio_mixer.v ctrl[3] + MIX_VOICE_WPTR) -- the OS publishes
+ * the ring write pointer on every of_audio_write, and the voice fades out,
+ * holds position in silence when it catches up, and resumes by itself when
+ * fresh PCM lands. A stalled main thread (SD load, level gen) can no longer
+ * make the voice replay stale ring contents, so the old app-side band-aids
+ * (free-threshold voice reset, IRQ silence tick, idle-hook ring feeding,
+ * the pre-decoded readahead) are gone. */
 
-/* Auto-silence-on-stall: the HW mixer voice loops the 2048-pair audio_ring
- * (~42 ms at 48 kHz) forever once started. When the main thread blocks for
- * longer than that (level loads, MPQ-sector decompression bursts, menu-
- * screen transitions where DevilutionX keeps the music stream alive), the
- * ring keeps replaying its last 42 ms. Fix: a periodic timer that runs in
- * IRQ context and silences the voice when the main thread hasn't pumped
- * in too many ticks. The next of_aulib_pump() from the main loop reopens
- * it via ensure_voice_open().
- *
- * IRQ SAFETY: only volatile uint32 atomic ops + a single function-pointer
- * call into of_audio_stream_close() (which writes MMIO + a couple of OS-
- * side statics). NO ecalls -- of_time_us() is an ecall and re-entering the
- * kernel from inside an interrupt is unsupported. We count ticks instead.
- *
- * RACE SAFETY: prior attempt broke music because main pump's of_audio_write
- * and IRQ's of_audio_stream_close both touch the HW mixer state (write idx,
- * voice control regs) and would interleave. Now serialized via the
- * try_lock/lock spin below: IRQ skips if main is mid-pump, main spins
- * briefly if IRQ is mid-silence. The lock uses RV32A LR/SC via __atomic. */
-
-/* Spinlock between main-thread pump and IRQ-context silence_tick. Both
- * touch the same HW audio device; without serialization, of_audio_write
- * and of_audio_stream_close interleave their MMIO sequences. */
+/* Spinlock serializing pump / suspend / mixer-init MMIO sequences. All
+ * callers run on the single main thread today (the IRQ/idle-hook feeders
+ * are gone), so it never contends -- kept because it is cheap and keeps
+ * the device-access sections explicit. */
 static volatile uint32_t g_audio_lock = 0;
 static inline bool audio_try_lock(void) {
 	uint32_t expected = 0;
@@ -173,50 +130,12 @@ static inline bool audio_try_lock(void) {
 }
 static inline void audio_lock(void) {
 	while (!audio_try_lock())
-		/* Spin. IRQ holding the lock will release in microseconds,
-		 * and IRQ can preempt this spin (its handler runs with the
-		 * lock taken; it will finish and release before main resumes). */ ;
+		/* Never contends today: all callers are on the single main
+		 * thread (the IRQ/idle-hook feeders are gone; see the
+		 * g_audio_lock comment above). */ ;
 }
 static inline void audio_unlock(void) {
 	__atomic_store_n(&g_audio_lock, 0, __ATOMIC_RELEASE);
-}
-
-static void of_aulib_silence_tick(void) {
-	if (!g_inited || !g_voice_open) return;
-	/* __atomic_add_fetch rather than `++` to avoid the C++20 volatile-
-	 * increment deprecation and to be explicit about IRQ visibility. */
-	if (__atomic_add_fetch(&g_silence_idle_ticks, 1, __ATOMIC_RELAXED)
-	    < SILENCE_STALE_TICKS) return;
-	/* Main pump holds the lock? Don't fight it; it just refreshed audio.
-	 * Resetting g_silence_idle_ticks here would mask a real stall, so we
-	 * leave the counter and try again on the next tick. */
-	if (!audio_try_lock()) return;
-	/* Silence by WRITING ZEROS into the ring, not by close/reopen. The
-	 * previous close-on-stall design (of_audio_stream_close + later
-	 * of_audio_stream_open) killed music entirely: open re-zeros the ring
-	 * AND resets audio_write_idx=0 AND sets MIX_VOICE_POS_WR=0, but by the
-	 * time pump calls of_audio_free() the HW POS has already advanced past
-	 * 0. write_idx ends up chasing read_pos around the ring, with every
-	 * pump's samples written at positions HW just passed -- they never
-	 * play. Verified against openfpgaOS audio.c / mixer.c.
-	 *
-	 * Writing silence under the same lock is safe: of_audio_write in the
-	 * OS is pure MMIO (uncached SDRAM stores + write_idx update), no
-	 * ecalls, and the spinlock guarantees pump's of_audio_write cannot
-	 * interleave. Voice stays continuously active; HW reads silence past
-	 * the last real sample instead of looping. */
-	{
-		static const int16_t silence[128 * 2] = {0};
-		int room = of_audio_free();
-		while (room > 0) {
-			int n = room < 128 ? room : 128;
-			int w = of_audio_write(silence, n);
-			if (w <= 0) break;
-			room -= w;
-		}
-	}
-	g_silence_idle_ticks = 0;
-	audio_unlock();
 }
 
 /* ---- active stream registry (single-threaded; pump + play/stop all run
@@ -382,20 +301,7 @@ bool Stream::rewind()
 	srcPos_ = 0.0;
 	consumed_ = 0;
 	cur_[0] = cur_[1] = 0.0F;
-	clearReadAhead();
 	return true;
-}
-void Stream::setReadAheadFrames(int frames)
-{
-	if (frames <= 0) {
-		readAhead_.clear();
-		readAheadCapacity_ = 0;
-		clearReadAhead();
-		return;
-	}
-	readAhead_.assign((size_t)frames * 2u, 0.0F);
-	readAheadCapacity_ = frames;
-	clearReadAhead();
 }
 bool Stream::play(int iterations)
 {
@@ -405,13 +311,6 @@ bool Stream::play(int iterations)
 	rewind();
 	playing_ = true;
 	paused_ = false;
-	if (readAheadCapacity_ > 0) {
-		fillReadAhead(readAheadCapacity_);
-		if (readAheadCount_ == 0) {
-			playing_ = false;
-			return false;
-		}
-	}
 	AddStream(this);
 	/* Start the HW voice if this is the first active stream. */
 	ensure_voice_open();
@@ -419,13 +318,11 @@ bool Stream::play(int iterations)
 }
 void Stream::stop()
 {
-	/* Music (read-ahead) streams: fade the HW voice down before it is silenced
-	 * so its buffered output drains a ramp, not a click ("plays one sample
-	 * over" at e.g. the menu->game music stop). SFX have no read-ahead and are
-	 * short, so they stop instantly. Only fade when this is the last active
-	 * stream (the voice is about to be silenced) and output isn't suspended. */
-	const bool fade = readAheadCapacity_ > 0
-	    && ActiveStreams().size() == 1 && ActiveStreams()[0] == this;
+	/* Fade the HW voice down before it is silenced so its buffered output
+	 * drains a ramp, not a click. Reached via SoundSample::Stop()/Release()
+	 * (music_stop routes through Release) and TSnd teardown. Only when this
+	 * is the last active stream (the voice is about to be silenced). */
+	const bool fade = ActiveStreams().size() == 1 && ActiveStreams()[0] == this;
 	playing_ = false;
 	RemoveStream(this);
 	if (fade)
@@ -449,36 +346,18 @@ std::chrono::microseconds Stream::duration()
 }
 void Stream::runFinishCallback()
 {
-	if (finishCallback_)
-		finishCallback_(*this);
+	/* The callback may destroy this Stream (DuplicateSound's callback
+	 * erases the owning SoundSample, sound.cpp).  Move the function to a
+	 * stack local so the executing closure is not freed mid-invocation,
+	 * and touch no members after the call -- `this` may be dangling. */
+	auto cb = std::move(finishCallback_);
+	if (cb)
+		cb(*this);
 }
 
 bool Stream::nextFrame(float out[2])
 {
-	if (readAheadCapacity_ > 0) {
-#ifndef OF_AULIB_DEFER_DECODE
-		/* Default: refill inline if the readahead drained. This can run a
-		 * storage-backed MPQ/decoder read while the pump holds the audio lock
-		 * (see of_aulib_pump). In practice play() fully primes the buffer and
-		 * maintainReadAhead() keeps it topped up, so this rarely fires. */
-		if (readAheadCount_ == 0 && !g_audio_no_sd)
-			fillReadAhead(OF_READAHEAD_REFILL_FRAMES);
-#endif
-		/* With OF_AULIB_DEFER_DECODE, never decode here: just pop. An empty
-		 * readahead returns false and mixInto() treats it as starvation. */
-		return popReadAhead(out);
-	}
 	return decodeLoopedFrame(out);
-}
-
-void Stream::maintainReadAhead()
-{
-	if (readAheadCapacity_ <= 0)
-		return;
-	if (!playing_ || paused_)
-		return;
-	if (readAheadCount_ < readAheadCapacity_)
-		fillReadAhead(OF_READAHEAD_REFILL_FRAMES);
 }
 
 bool Stream::decodeRawFrame(float out[2])
@@ -520,50 +399,6 @@ bool Stream::decodeLoopedFrame(float out[2])
 	return false;
 }
 
-void Stream::clearReadAhead()
-{
-	readAheadRead_ = 0;
-	readAheadWrite_ = 0;
-	readAheadCount_ = 0;
-}
-
-bool Stream::fillReadAhead(int maxFrames)
-{
-	if (readAheadCapacity_ <= 0)
-		return true;
-
-	int filled = 0;
-	while (readAheadCount_ < readAheadCapacity_
-	    && (maxFrames <= 0 || filled < maxFrames)) {
-		float frame[2];
-		if (!decodeLoopedFrame(frame))
-			return false;
-		const size_t write = (size_t)readAheadWrite_ * 2u;
-		readAhead_[write] = frame[0];
-		readAhead_[write + 1] = frame[1];
-		readAheadWrite_++;
-		if (readAheadWrite_ >= readAheadCapacity_)
-			readAheadWrite_ = 0;
-		readAheadCount_++;
-		filled++;
-	}
-	return true;
-}
-
-bool Stream::popReadAhead(float out[2])
-{
-	if (readAheadCount_ <= 0)
-		return false;
-	const size_t read = (size_t)readAheadRead_ * 2u;
-	out[0] = readAhead_[read];
-	out[1] = readAhead_[read + 1];
-	readAheadRead_++;
-	if (readAheadRead_ >= readAheadCapacity_)
-		readAheadRead_ = 0;
-	readAheadCount_--;
-	return true;
-}
-
 bool Stream::mixInto(int32_t *accum, int frames)
 {
 	if (!playing_) return false;
@@ -596,8 +431,9 @@ bool Stream::mixInto(int32_t *accum, int frames)
 	 * block and subtract the same count from consumed_, preserving the
 	 * consumed_ <= (long)srcPos_ relationship (and thus the exact decode/output
 	 * sequence) -- consumed_ is a pure local resampler counter, used nowhere
-	 * else. Clamp to consumed_ so a deferred-decode starvation state (srcPos_
-	 * momentarily ahead of consumed_) can never drive consumed_ negative. */
+	 * else. Clamp to consumed_ because with step > 1 (source rate above
+	 * 48 kHz) srcPos_ can legitimately be ahead of consumed_ at a block
+	 * boundary; the clamp keeps consumed_ from going transiently negative. */
 	if (srcPos_ >= 1.0F) {
 		long whole = (long)srcPos_;
 		if (whole > consumed_) whole = consumed_;
@@ -608,28 +444,8 @@ bool Stream::mixInto(int32_t *accum, int frames)
 	for (int i = 0; i < frames; ++i) {
 		long target = (long)srcPos_;
 		while (consumed_ <= target) {
-			if (!nextFrame(cur_)) {
-				/* Idle hook fired inside a blocking SD read: no decode ran,
-				 * so an empty readahead means "no data right now", NOT EOS --
-				 * leave the pump's pre-zeroed silence and keep the stream. */
-				if (g_audio_no_sd && readAheadCapacity_ > 0)
-					return true;
-#ifdef OF_AULIB_DEFER_DECODE
-				/* Readahead (music) path decodes only in maintainReadAhead(),
-				 * outside the audio lock. An empty readahead while playing_ is
-				 * still set means the decoder hasn't caught up (a storage
-				 * stall), NOT end-of-stream: leave the rest of this block as
-				 * the silence the pump pre-zeroed, keep srcPos_/consumed_/cur_
-				 * where they are so resampling resumes coherently next pump,
-				 * and keep the stream alive. True EOS instead clears playing_
-				 * inside fillReadAhead()/maintainReadAhead(), and the
-				 * !playing_ guard at the top of mixInto erases the stream and
-				 * fires the finish callback on the following pump. */
-				if (readAheadCapacity_ > 0)
-					return true;
-#endif
+			if (!nextFrame(cur_))
 				return false;
-			}
 			++consumed_;
 		}
 		if (!muted_) {
@@ -655,54 +471,24 @@ bool init(int freq, SDL_AudioFormat format, int channels, int frameSize, const s
 	 * then resets the audio service state with of_audio_init() and lets the
 	 * next pump restart voice 31 through of_audio_write(). */
 	of_audio_init();
-	/* Measure the real OS ring depth. Right after of_audio_init() the stream
-	 * voice is inactive, so of_audio_free() reports the full ring capacity
-	 * (2048 pairs / ~42 ms on Pocket; OF_AUDIO_FIFO=1024 is a DIFFERENT thing,
-	 * the downstream HW dcfifo). The underrun reset uses this to fire only when
-	 * the ring is genuinely near-empty.
-	 *
-	 * ROOT CAUSE / REAL FIX: music is software-mixed on the MAIN thread into
-	 * this ~42 ms ring; whenever the main thread is busy longer than that (a
-	 * heavy render frame, an MPQ/bzip2 asset load, level gen) the autonomous HW
-	 * mixer runs out of fresh samples and underruns. (SFX don't: they play on
-	 * separate autonomous HW mixer voices, fed once.) No app-side reset can win
-	 * here -- on the small ring every underrun costs either a replay artifact or
-	 * a reset hitch. The durable fix is OS-side: enlarge the stream ring
-	 * (targets/pocket: AUDIO_RING_PAIRS + OF_TARGET_AUDIO_STREAM_SIZE) so it
-	 * spans the worst main-thread stall; ~170-340 ms removes audible underruns
-	 * with no downside (music latency is irrelevant and SFX bypass the ring). */
-	g_ring_capacity = of_audio_free();
-	if (g_ring_capacity < 256)
-		g_ring_capacity = OF_AUDIO_FIFO; /* implausible -> safe fallback */
-	g_underrun_reset_free = (g_ring_capacity > OF_UNDERRUN_FREE_GRACE)
-	    ? (g_ring_capacity - OF_UNDERRUN_FREE_GRACE)
-	    : g_ring_capacity;
+	/* Underrun handling is in HARDWARE: voice 31 runs in the mixer's stream
+	 * mode, holding (in ramped silence) at the published write pointer when
+	 * the main-loop pump stalls and resuming by itself -- no app-side stall
+	 * detection, ring resets, or background feeders. The ~1.37 s OS ring
+	 * (OF_TARGET_AUDIO_STREAM_SIZE) is purely how long music keeps PLAYING
+	 * through a blocking load before the graceful fade. */
 	g_voice_open = false;
-	g_voice_has_written = false;
 	g_output_suspended = false;
 	g_output_suspend_depth = 0;
-	g_silence_idle_ticks = 0;
 	g_inited = true;
-	/* Feed the music ring during blocking SD reads: the OS calls this hook from
-	 * its file-read DMA wait, so music does not stall while the main thread is
-	 * blocked loading assets. of_aulib_idle_pump mixes only from the pre-decoded
-	 * readahead (no SD); it is a no-op on an OS that predates the hook entry. */
-	of_file_set_idle_hook(of_aulib_idle_pump);
-	/* IRQ-side silence remains disabled. ScummVM showed of_audio_write()
-	 * from the timer ISR can produce audible modulation, so Diablo keeps
-	 * all PCM writes on the main thread. */
-	(void)of_aulib_silence_tick;
 	return true;
 }
 void quit()
 {
-	of_timer_stop();
 	g_inited = false;
 	g_output_suspended = false;
 	g_output_suspend_depth = 0;
 	g_voice_open = false;
-	g_voice_has_written = false;
-	g_silence_idle_ticks = 0;
 	ActiveStreams().clear();
 }
 int sampleRate() { return OF_OUT_RATE; }
@@ -731,7 +517,6 @@ extern "C" void of_aulib_ensure_hw_mixer_inited(void)
 	if (g_voice_open || !ActiveStreams().empty())
 		of_audio_init();
 	g_voice_open = false;
-	g_voice_has_written = false;
 	audio_unlock();
 	std::printf("[of] mixer_init done; voice31 will restart on next audio write\n");
 	g_hw_mixer_inited = true;
@@ -764,7 +549,6 @@ extern "C" void of_aulib_resume_output(void)
 		if (g_hw_mixer_inited)
 			of_mixer_set_master_volume(255);
 	}
-	g_silence_idle_ticks = 0;
 	audio_unlock();
 }
 
@@ -774,11 +558,7 @@ extern "C" void of_aulib_resume_output(void)
 extern "C" void of_aulib_pump(void)
 {
 	if (!g_inited) return;
-	/* Serialize against silence_tick (IRQ). Both touch HW mixer state. */
 	audio_lock();
-	/* Mark this pump for the silence-on-stall timer. Done before any
-	 * early exit so even a no-op pump resets the stall counter. */
-	g_silence_idle_ticks = 0;
 	if (g_output_suspended) {
 		silence_voice_locked();
 		audio_unlock();
@@ -799,7 +579,8 @@ extern "C" void of_aulib_pump(void)
 	static int16_t out[OF_MIX_BLOCK * 2];
 
 	int freePairs = of_audio_free();
-	reset_stale_voice_if_underrun(freePairs);
+	if (freePairs > OF_PUMP_FILL_CAP_PAIRS)
+		freePairs = OF_PUMP_FILL_CAP_PAIRS;
 	while (freePairs > 0) {
 		int n = freePairs < OF_MIX_BLOCK ? freePairs : OF_MIX_BLOCK;
 		std::memset(acc, 0, sizeof(int32_t) * n * 2);
@@ -809,6 +590,10 @@ extern "C" void of_aulib_pump(void)
 			Aulib::Stream *s = v[i];
 			if (!s->mixInto(acc, n)) {
 				v.erase(v.begin() + i);
+				/* Runs under g_audio_lock: finish callbacks must not
+				 * call Stream::play()/stop(), suspend/resume, or
+				 * of_aulib_ensure_hw_mixer_inited -- the audio lock is
+				 * a non-reentrant spin and would hang forever. */
 				s->runFinishCallback();
 			} else {
 				++i;
@@ -822,59 +607,10 @@ extern "C" void of_aulib_pump(void)
 		int wrote = of_audio_write(out, n);
 		if (wrote <= 0)
 			break;
-		g_voice_has_written = true;
 		freePairs -= wrote;
 	}
 	/* End-of-stream auto-removed the last active stream inside the loop?
 	 * Close the voice so the ring isn't left looping its tail samples. */
 	close_voice_if_idle();
-	audio_unlock();
-
-	/* Refill decoded music after the hardware FIFO has been topped up and
-	 * outside the MMIO lock. If a storage read stalls, the HW ring already
-	 * has the maximum available headroom instead of underrunning in the
-	 * middle of mixInto(). */
-	auto &v = ActiveStreams();
-	for (Aulib::Stream *s : v)
-		s->maintainReadAhead();
-}
-
-/* OS file-read idle hook: invoked from the blocking file-read DMA wait
- * (registered via of_file_set_idle_hook). Tops up the HW music ring from each
- * stream's ALREADY-DECODED readahead (g_audio_no_sd => mixInto never touches
- * the SD), so music keeps playing while the main thread is blocked on an SD
- * read. Runs in the file-wait trap context, so it stays ecall-free: only
- * of_audio_free/of_audio_write (pure OF_SVC MMIO) and float mixing -- no SD, no
- * logging, no ring reset/init. try_lock cleanly skips when the main pump owns
- * the device, including the re-entrant case where this hook fires from inside
- * the pump's own decode read. Streams are never erased here (EOS detection and
- * removal stay with the main pump, which is the only path that decodes). */
-extern "C" void of_aulib_idle_pump(void)
-{
-	if (!g_inited || g_output_suspended || !g_voice_open) return;
-	if (!audio_try_lock()) return;
-	if (g_voice_open && !g_output_suspended && !ActiveStreams().empty()) {
-		static int32_t acc[OF_MIX_BLOCK * 2];
-		static int16_t out[OF_MIX_BLOCK * 2];
-		g_audio_no_sd = true;
-		int freePairs = of_audio_free();
-		while (freePairs > 0) {
-			int n = freePairs < OF_MIX_BLOCK ? freePairs : OF_MIX_BLOCK;
-			std::memset(acc, 0, sizeof(int32_t) * n * 2);
-			auto &v2 = ActiveStreams();
-			for (size_t i = 0; i < v2.size(); ++i)
-				v2[i]->mixInto(acc, n);
-			for (int j = 0; j < n * 2; ++j) {
-				int32_t x = acc[j];
-				if (x > 32767) x = 32767; else if (x < -32768) x = -32768;
-				out[j] = (int16_t)x;
-			}
-			int wrote = of_audio_write(out, n);
-			if (wrote <= 0) break;
-			g_voice_has_written = true;
-			freePairs -= wrote;
-		}
-		g_audio_no_sd = false;
-	}
 	audio_unlock();
 }

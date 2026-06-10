@@ -12,8 +12,14 @@
                 "defaultval": 0,
                 "mask": "0xFFFF7FFF",
                 "options": [
-                    { "name": "Off", "value": "0x00000000" },
-                    { "name": "On",  "value": "0x00008000" }
+                    {
+                        "name": "Off",
+                        "value": "0x00000000"
+                    },
+                    {
+                        "name": "On",
+                        "value": "0x00008000"
+                    }
                 ]
             },
             {
@@ -26,11 +32,18 @@
                 "defaultval": "0x00",
                 "mask": "0xFFFFFFE0",
                 "options": [
-                    { "value": "0x00", "name": "None" },
-                    { "value": "0x03", "name": "SNES" },
-                    { "value": "0x0B", "name": "SNES A,B<->X,Y" },
-                    { "value": "0x11", "name": "PSX (Digital DPAD)" },
-                    { "value": "0x13", "name": "PSX (Analog DPAD)" }
+                    {
+                        "value": "0x00",
+                        "name": "None"
+                    },
+                    {
+                        "value": "0x10",
+                        "name": "PSX"
+                    },
+                    {
+                        "value": "0x11",
+                        "name": "PSX Fast"
+                    }
                 ]
             },
             {
@@ -43,9 +56,18 @@
                 "defaultval": "0x00",
                 "mask": "0xFFFFFC3F",
                 "options": [
-                    { "value": "0x0",  "name": "SNAC -> P1" },
-                    { "value": "0x40", "name": "SNAC -> P2" },
-                    { "value": "0x80", "name": "SNAC P1,P2->P1,P2" }
+                    {
+                        "value": "0x0",
+                        "name": "SNAC -> P1"
+                    },
+                    {
+                        "value": "0x40",
+                        "name": "SNAC -> P2"
+                    },
+                    {
+                        "value": "0x80",
+                        "name": "SNAC P1,P2->P1,P2"
+                    }
                 ]
             },
             {
@@ -58,22 +80,62 @@
                 "defaultval": "0x0",
                 "mask": "0xFFFFC3FF",
                 "options": [
-                    { "value": "0x0",    "name": "RGBS" },
-                    { "value": "0x0400", "name": "RGsB" },
-                    { "value": "0x0800", "name": "YPbPr" },
-                    { "value": "0x0C00", "name": "Y/C NTSC" },
-                    { "value": "0x1000", "name": "Y/C PAL" },
-                    { "value": "0x1400", "name": "SC 0% RGBHV" },
-                    { "value": "0x1800", "name": "SC 50% RGBHV" },
-                    { "value": "0x1C00", "name": "SC HQ2x RGBHV" },
-                    { "value": "0x2000", "name": "RGBS,Pocket OFF" },
-                    { "value": "0x2400", "name": "RGsB,Pocket OFF" },
-                    { "value": "0x2800", "name": "YPbPr,Pocket OFF" },
-                    { "value": "0x2C00", "name": "Y/C NTSC,Pocket OFF" },
-                    { "value": "0x3000", "name": "Y/C PAL,Pocket OFF" },
-                    { "value": "0x3400", "name": "SC 0% RGBHV,Pocket OFF" },
-                    { "value": "0x3800", "name": "SC 50% RGBHV,Pocket OFF" },
-                    { "value": "0x3C00", "name": "SC HQ2x RGBHV,Pocket OFF" }
+                    {
+                        "value": "0x0",
+                        "name": "RGBS"
+                    },
+                    {
+                        "value": "0x0400",
+                        "name": "RGsB"
+                    },
+                    {
+                        "value": "0x0800",
+                        "name": "YPbPr"
+                    },
+                    {
+                        "value": "0x0C00",
+                        "name": "Y/C NTSC"
+                    },
+                    {
+                        "value": "0x1000",
+                        "name": "Y/C PAL"
+                    },
+                    {
+                        "value": "0x1400",
+                        "name": "SC 0% RGBHV"
+                    },
+                    {
+                        "value": "0x1800",
+                        "name": "SC 50% RGBHV"
+                    },
+                    {
+                        "value": "0x1C00",
+                        "name": "SC HQ2x RGBHV"
+                    }
+                ]
+            },
+            {
+                "name": "Pocket LCD",
+                "id": 70,
+                "type": "list",
+                "enabled": true,
+                "persist": true,
+                "address": "0xF7000000",
+                "defaultval": 0,
+                "mask": "0xFFFCFFFF",
+                "options": [
+                    {
+                        "value": "0x00000000",
+                        "name": "On"
+                    },
+                    {
+                        "value": "0x00010000",
+                        "name": "Off"
+                    },
+                    {
+                        "value": "0x00020000",
+                        "name": "Terminal"
+                    }
                 ]
             },
             {
@@ -84,7 +146,13 @@
                 "address": "0xF7000004",
                 "persist": true,
                 "defaultval": 0,
-                "graphical": { "signed": true, "min": -32, "max": 31, "adjust_small": 1, "adjust_large": 4 }
+                "graphical": {
+                    "signed": true,
+                    "min": -32,
+                    "max": 31,
+                    "adjust_small": 1,
+                    "adjust_large": 4
+                }
             },
             {
                 "name": "Video V Offset",
@@ -94,7 +162,73 @@
                 "address": "0xF7000008",
                 "persist": true,
                 "defaultval": 0,
-                "graphical": { "signed": true, "min": -16, "max": 15, "adjust_small": 1, "adjust_large": 4 }
+                "graphical": {
+                    "signed": true,
+                    "min": -16,
+                    "max": 15,
+                    "adjust_small": 1,
+                    "adjust_large": 4
+                }
+            },
+            {
+                "name": "App Option 1",
+                "id": 100,
+                "type": "list",
+                "enabled": true,
+                "persist": true,
+                "address": "0x03FE0000",
+                "defaultval": 0,
+                "mask": "0xFFFFFFFF",
+                "options": [
+                    {
+                        "value": "0x00",
+                        "name": "Off"
+                    },
+                    {
+                        "value": "0x01",
+                        "name": "On"
+                    }
+                ]
+            },
+            {
+                "name": "App Option 2",
+                "id": 101,
+                "type": "slider_u32",
+                "enabled": true,
+                "persist": true,
+                "address": "0x03FE0004",
+                "defaultval": 5,
+                "graphical": {
+                    "signed": false,
+                    "min": 0,
+                    "max": 10,
+                    "adjust_small": 1,
+                    "adjust_large": 2
+                }
+            },
+            {
+                "name": "App Option 3",
+                "id": 102,
+                "type": "list",
+                "enabled": true,
+                "persist": true,
+                "address": "0x03FE0008",
+                "defaultval": 0,
+                "mask": "0xFFFFFFFF",
+                "options": [
+                    {
+                        "value": "0x00",
+                        "name": "Easy"
+                    },
+                    {
+                        "value": "0x01",
+                        "name": "Normal"
+                    },
+                    {
+                        "value": "0x02",
+                        "name": "Hard"
+                    }
+                ]
             }
         ],
         "messages": []

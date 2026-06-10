@@ -83,16 +83,19 @@ static SDL_mutex *g_audio_mutex;
 /* ---- Timer ---- */
 static uint64_t g_start_us;
 
+/* Fields are listed in declaration order so the initialiser is valid in
+ * both C99 (which allows arbitrary designator order) and C++ (which
+ * requires declaration order — cxxdemo links of_sdl2.c through c++). */
 static const struct of_capabilities g_caps = {
-    .magic = OF_CAPS_MAGIC,
-    .version = OF_CAPS_VERSION,
-    .fb_width = OF_SCREEN_W,
-    .fb_height = OF_SCREEN_H,
-    .fb_stride = OF_SCREEN_W,
-    .fb_size = OF_FB_SIZE_8BIT,
+    .magic       = OF_CAPS_MAGIC,
+    .version     = OF_CAPS_VERSION,
+    .fb_size     = OF_FB_SIZE_8BIT,
+    .fb_width    = OF_SCREEN_W,
+    .fb_height   = OF_SCREEN_H,
+    .fb_stride   = OF_SCREEN_W,
     .hw_features = OF_HW_MIXER | OF_HW_SAVE_SLOTS,
     .mixer_voices = OF_MIXER_MAX_VOICES,
-    .mixer_rate = OF_AUDIO_RATE,
+    .mixer_rate  = OF_AUDIO_RATE,
     .platform_id = OF_PLATFORM_SIM,
     .cpu_freq_hz = 100000000u,
 };
@@ -468,6 +471,10 @@ static uint32_t key_to_btn(SDL_Scancode sc) {
         default: return 0;
     }
 }
+
+/* Single-player fast-path. On HW this skips the P1 read; on PC the
+ * desktop backend doesn't track P1 at all, so it's just an alias. */
+void of_input_poll_p0(void) { of_input_poll(); }
 
 void of_input_poll(void) {
     SDL_Event ev;

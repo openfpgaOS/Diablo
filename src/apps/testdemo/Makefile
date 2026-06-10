@@ -1,3 +1,9 @@
+#------------------------------------------------------------------------------
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileType: SOURCE
+# SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+#------------------------------------------------------------------------------
+
 # testdemo exercises MIDI; pull in the MIDI engine + sample voice engine.
 SDK_DIR = ../../sdk
 SRCS = $(wildcard *.c) \

@@ -7,7 +7,13 @@
 /*
  * of_smp_voice.c -- Sample voice engine for sample-based MIDI with
  *                   DAHDSR envelopes, dual LFOs, and pitch bend.
+ *
+ * Hardware-only: the voice engine drives the HW mixer through OF_SVC.
+ * On OF_PC the file collapses to silent stubs at the bottom so apps
+ * that pull it in for desktop testing still link.
  */
+
+#ifndef OF_PC
 
 #include "include/of_smp_voice.h"
 #include "include/of_smp_bank.h"
@@ -1072,3 +1078,41 @@ void smp_voice_set_master_volume(int vol)
     if (vol > 255) vol = 255;
     master_vol = vol;
 }
+
+#else /* OF_PC — desktop has no HW mixer voice path; silent stubs */
+
+#include "include/of_smp_voice.h"
+#include <string.h>
+#include <stdint.h>
+
+void smp_voice_init(void) {}
+int  smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
+                       int velocity, const void *sample_base) {
+    (void)zone; (void)midi_ch; (void)note; (void)velocity; (void)sample_base;
+    return -1;
+}
+void smp_voice_note_off(int midi_ch, int note) { (void)midi_ch; (void)note; }
+void smp_voice_tick(void) {}
+
+void smp_voice_tick_get_stats(smp_tick_stats_t *out) {
+    if (out) memset(out, 0, sizeof(*out));
+}
+void smp_voice_tick_reset_stats(void) {}
+void smp_voice_tick_record_pump(uint32_t elapsed_us, int ticks_fired,
+                                int budget_exceeded) {
+    (void)elapsed_us; (void)ticks_fired; (void)budget_exceeded;
+}
+
+void smp_voice_update_volume(int ch, int vol, int exp) { (void)ch; (void)vol; (void)exp; }
+void smp_voice_update_pan(int ch, int pan)             { (void)ch; (void)pan; }
+void smp_voice_update_bend(int ch, int bend)           { (void)ch; (void)bend; }
+void smp_voice_update_mod(int ch, int depth)           { (void)ch; (void)depth; }
+void smp_voice_update_sustain(int ch, int on)          { (void)ch; (void)on; }
+void smp_voice_update_filter(int ch, int b, int r)     { (void)ch; (void)b; (void)r; }
+void smp_voice_update_reverb_send(int ch, int v)       { (void)ch; (void)v; }
+void smp_voice_update_chorus_send(int ch, int v)       { (void)ch; (void)v; }
+void smp_voice_all_off(int ch)                         { (void)ch; }
+void smp_voice_all_off_global(void)                    {}
+void smp_voice_set_master_volume(int vol)              { (void)vol; }
+
+#endif /* OF_PC */
