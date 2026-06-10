@@ -11,3 +11,7 @@ build/
 releases/
 src/tools/phdp/phdp
 src/tools/phdp/phdpd
+
+# Staged game assets (provided at deploy time, not source)
+dist/*/Assets/*/common/*.mpq
+dist/*/Assets/*/common/*.iso

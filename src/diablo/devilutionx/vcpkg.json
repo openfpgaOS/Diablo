@@ -1,0 +1,37 @@
+{
+	"name": "devilutionx",
+	"version-string": "1.5.2",
+	"dependencies": [
+		"fmt",
+		"bzip2",
+		"simpleini"
+	],
+	"builtin-baseline": "74ec888e385d189b42d6b398d0bbaa6f1b1d3b0e",
+	"features": {
+		"sdl1": {
+			"description": "Use SDL1.2 instead of SDL2",
+			"dependencies": [ "sdl1", "libpng" ]
+		},
+		"sdl2": {
+			"description": "Use SDL2",
+			"dependencies": [ "sdl2", "sdl2-image" ]
+		},
+		"encryption": {
+			"description": "Build libsodium for packet encryption",
+			"dependencies": [ "libsodium" ]
+		},
+		"translations": {
+			"description": "Build translation files",
+			"dependencies": [
+				{
+					"name": "gettext",
+					"features": [ "tools" ]
+				}
+			]
+		},
+		"tests": {
+			"description": "Build tests",
+			"dependencies": [ "gtest" ]
+		}
+	}
+}

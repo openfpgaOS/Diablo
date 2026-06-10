@@ -1,4 +1,0 @@
-[submodule "src/diablo/devilutionx"]
-	path = src/diablo/devilutionx
-	url = https://github.com/diasurgical/devilutionX.git
-	shallow = true
