@@ -87,6 +87,7 @@ static inline void of_cache_flush_video(void) { /* no-op on PC */ }
 static inline void of_cache_flush(void) { /* no-op on PC */ }
 static inline void of_cache_clean_range(void *addr, uint32_t size) { (void)addr; (void)size; }
 static inline void of_cache_inval_range(void *addr, uint32_t size) { (void)addr; (void)size; }
+static inline void of_cache_flush_range(void *addr, uint32_t size) { (void)addr; (void)size; }
 static inline void of_cache_invalidate_icache(void) { /* no-op on PC */ }
 
 /* PC: no cache — just access directly */

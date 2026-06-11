@@ -73,29 +73,52 @@ extern "C" {
 #define OF_HW_GPU_PARAM_SPAN_ZTEST (1 << 17) /* Param-span Quake-compatible z test/write */
 #define OF_HW_GPU_PARAM_SPAN_Q29_SCALE (1 << 18) /* Param-span Q29 dynamic scale */
 #define OF_HW_GPU_PARAM_TRI (1 << 19)   /* Param-tri HW edge walker (DRAW_PARAM_TRI) */
-#define OF_HW_GPU_VERT_TRI  (1 << 20)   /* HW plane derivation (SET_TRI_STATE/DRAW_VERT_TRI) */
+#define OF_HW_GPU_VERT_TRI  (1 << 20)   /* HW plane derivation (DRAW_VERT_TRI 0x4B
+                                         * on the 0x4A sticky state; 0x4A itself
+                                         * decodes on every variant) */
 #define OF_HW_GPU_COLUMN_LIST (1 << 21) /* CMD_DRAW_COLUMN_LIST (0x4C): 5-word
                                          * lane records for vertical 1-wide
                                          * textured columns (drops the always-0
                                          * s/sstep words; ~28% less command
                                          * traffic for column renderers —
                                          * Doom/Wolf3D/Duke3D walls + sprites).
-                                         * SET on EVERY variant (OS25 AND OS30):
-                                         * a small general decode path, present
-                                         * on all cores, byte-identical to a
-                                         * 0x48 direct-affine column. */
+                                         * Gated by axi_periph_slave's
+                                         * HAS_COLUMN_LIST: SET on OS25/MiSTer,
+                                         * CLEAR on Pocket OS30 (lean Quake2
+                                         * GPU — the 0x4C decode reuses the
+                                         * compact-span lane bank, which OS30
+                                         * also drops; a 0x4C there drains as a
+                                         * no-op).  Where set, byte-identical
+                                         * to a 0x48 direct-affine column. */
 #define OF_HW_GPU_PARAM_TRI_RECS (1 << 22) /* CMD_DRAW_PARAM_TRI_RECS (0x4D):
                                          * records-only 0x49 variant — 16-word
                                          * payload of per-triangle attr/light
                                          * planes + q29 + vertices, reusing the
                                          * 0x4A sticky surface/control/clamp/z/
                                          * clip state (re-arm 0x4A after any
-                                         * 0x48/0x49, which overwrites the
+                                         * 0x48/0x49/0x4C, which overwrites the
                                          * shared staging).  Drops ~21 constant
                                          * header words per triangle vs full
-                                         * 0x49.  SET on EVERY variant: the 0x4A
-                                         * sticky decode + 0x4D path do not need
-                                         * the 0x4B derivation hardware. */
+                                         * 0x49.  The Quake2 world-pass header-
+                                         * dedup opcode: SET on OS30/MiSTer,
+                                         * CLEAR on OS25 (ALM budget — the 0x4A
+                                         * sticky decode stays everywhere, but
+                                         * OS25 prunes the 0x4D arms). */
+#define OF_HW_GPU_SPAN_GROUP (1 << 23)  /* 0x48 compact-direct lane form: 4-word
+                                         * header + 7-word lane records, 11-32
+                                         * word payloads — what the
+                                         * of_gpu_draw_affine_span_group
+                                         * emitters produce.  SET on OS25/
+                                         * MiSTer, CLEAR on Pocket OS30 (lean
+                                         * Quake2 GPU), where a compact-sized
+                                         * 0x48 drains as a no-op and the SDK
+                                         * emitter refuses instead.  The
+                                         * long-form record-style 0x48 (31-word
+                                         * header + records, >=33 words —
+                                         * of_gpu_draw_param_span_list and the
+                                         * persp span group) decodes on EVERY
+                                         * variant and is NOT gated by this
+                                         * bit. */
 
 /* Convenience: all the GPU bits an app might care about for renderer choice. */
 #define OF_HW_GPU_LITE_MASK  (OF_HW_GPU_SPAN | OF_HW_GPU_FRAGPIPE)
