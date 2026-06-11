@@ -130,6 +130,24 @@ uint32_t Smacker_GetCurrentFrameNum(SmackerHandle &handle)
 	return classInstances[handle.instanceIndex]->GetCurrentFrameNum();
 }
 
+void Smacker_SetVideoKeyframesOnly(SmackerHandle &handle, int enable)
+{
+	SmackerDecoder *decoder = classInstances[handle.instanceIndex];
+	decoder->videoKeyframesOnly = enable != 0;
+}
+
+void Smacker_ForceNextVideoDecode(SmackerHandle &handle)
+{
+	SmackerDecoder *decoder = classInstances[handle.instanceIndex];
+	decoder->forceNextVideoDecode = true;
+}
+
+int Smacker_DidDecodeVideo(SmackerHandle &handle)
+{
+	SmackerDecoder *decoder = classInstances[handle.instanceIndex];
+	return decoder->lastFrameHadVideo ? 1 : 0;
+}
+
 uint32_t Smacker_GetNextFrame(SmackerHandle &handle)
 {
 	SmackerDecoder *decoder = classInstances[handle.instanceIndex];
@@ -709,6 +727,11 @@ int SmackerDecoder::ReadPacket()
 
 	uint32_t frameSize = frameSizes[currentFrame] & (~3);
 	uint8_t frameFlag  = frameFlags[currentFrame];
+	// Keyframe flag is bit 0 of the (dword-aligned) frame size entry; the
+	// absolute end of this frame is fixed regardless of how much the
+	// palette/audio parsing below consumes.
+	const bool frameIsKeyframe = (frameSizes[currentFrame] & 1) != 0;
+	const uint32_t frameEndPos = nextPos + frameSize;
 
 	// handle palette change
 	if (frameFlag & kSMKpal)
@@ -774,11 +797,21 @@ int SmackerDecoder::ReadPacket()
 	if (frameSize < 0)
 		return -1;
 
-	DecodeFrame(frameSize);
+	if (!videoKeyframesOnly || frameIsKeyframe || forceNextVideoDecode) {
+		forceNextVideoDecode = false;
+		DecodeFrame(frameSize);
+		lastFrameHadVideo = true;
+		nextPos = file.GetPosition();
+	} else {
+		// Audio-priority mode: skip the video chunk bytewise. The held
+		// picture stays the last decoded keyframe, so it is always
+		// self-consistent (deltas never resume from a skipped frame).
+		file.Seek(frameEndPos, SmackerCommon::FileStream::kSeekStart);
+		lastFrameHadVideo = false;
+		nextPos = frameEndPos;
+	}
 
 	currentFrame++;
-
-	nextPos = file.GetPosition();
 
 	return 0;
 }

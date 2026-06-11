@@ -63,17 +63,21 @@ Version: $GAME_VERSION
 
 Installation:
 1. Extract this ZIP to your Analogue Pocket SD card root
-2. Merge with existing folders if prompted
+2. Merge with existing folders if prompted (including Saves/)
 3. The game will appear in the Pocket menu
 
-Save files are created automatically on first use.
+Settings and save files live in Saves/<platform>/common/ -- the ZIP ships
+starter files there; in-game saves persist when you exit the core through
+the Pocket menu.
 EOF
 
     # Create ZIP
     cd "$INPUT"
     rm -f "$OUTPUT" 2>/dev/null || true
+    EXTRA_DIRS=""
+    [ -d Saves ] && EXTRA_DIRS="Saves/"
     zip -r "$OUTPUT" \
-        Cores/ Assets/ Platforms/ INSTALL.txt \
+        Cores/ Assets/ Platforms/ $EXTRA_DIRS INSTALL.txt \
         -x "*.DS_Store" "Thumbs.db" 2>/dev/null
     cd "$SDK_DIR"
 

@@ -583,6 +583,17 @@ extern "C" void of_aulib_set_max_buffered_pairs(int pairs)
 	g_max_buffered_pairs = pairs;
 }
 
+/* Currently banked audio in the OS ring (stereo pairs at 48 kHz; 48 pairs
+ * = 1 ms). Lets the movie player budget expensive video decodes against
+ * the audio cushion instead of a blind cadence. */
+extern "C" int of_aulib_buffered_pairs(void)
+{
+	if (!g_inited || g_ring_capacity <= 0)
+		return 0;
+	int b = g_ring_capacity - 1 - of_audio_free();
+	return b < 0 ? 0 : b;
+}
+
 /* Stop all HW SFX voices (0-30) WITHOUT touching the music stream voice 31.
  * Level transitions must tear down looping SFX so no voice keeps DMA-reading
  * level-owned PCM buffers that are about to be freed -- but music now plays

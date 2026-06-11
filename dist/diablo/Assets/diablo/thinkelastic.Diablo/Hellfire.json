@@ -1,91 +1,91 @@
 {
-    "instance": {
-        "magic": "APF_VER_1",
-        "variant_select": {
-            "id": 666,
-            "select": false
-        },
-        "data_slots": [
-            {
-                "id": 1,
-                "filename": "os.bin"
-            },
-            {
-                "id": 3,
-                "filename": "diablo.elf"
-            },
-            {
-                "id": 4,
-                "filename": "DIABDAT.mpq"
-            },
-            {
-                "id": 5,
-                "filename": "devilutionx.mpq"
-            },
-            {
-                "id": 6,
-                "filename": "fonts.mpq"
-            },
-            {
-                "id": 7,
-                "filename": "hellfire.mpq"
-            },
-            {
-                "id": 9,
-                "filename": "hellfire.ini"
-            },
-            {
-                "id": 10,
-                "filename": "single_0.sv"
-            },
-            {
-                "id": 11,
-                "filename": "single_1.sv"
-            },
-            {
-                "id": 12,
-                "filename": "single_2.sv"
-            },
-            {
-                "id": 13,
-                "filename": "single_3.sv"
-            },
-            {
-                "id": 14,
-                "filename": "single_4.sv"
-            },
-            {
-                "id": 15,
-                "filename": "single_5.sv"
-            },
-            {
-                "id": 16,
-                "filename": "single_6.sv"
-            },
-            {
-                "id": 17,
-                "filename": "single_7.sv"
-            },
-            {
-                "id": 18,
-                "filename": "single_8.sv"
-            },
-            {
-                "id": 19,
-                "filename": "single_9.sv"
-            },
-            {
-                "id": 20,
-                "filename": "hfmonk.mpq"
-            },
-            {
-                "id": 21,
-                "filename": "hfmusic.mpq"
-            },
-            {
-                "id": 22,
-                "filename": "hfvoice.mpq"
-            }
-        ]
-    }
+  "instance": {
+    "magic": "APF_VER_1",
+    "variant_select": {
+      "id": 666,
+      "select": false
+    },
+    "data_slots": [
+      {
+        "id": 1,
+        "filename": "os.bin"
+      },
+      {
+        "id": 3,
+        "filename": "diablo.elf"
+      },
+      {
+        "id": 4,
+        "filename": "DIABDAT.mpq"
+      },
+      {
+        "id": 5,
+        "filename": "devilutionx.mpq"
+      },
+      {
+        "id": 6,
+        "filename": "fonts.mpq"
+      },
+      {
+        "id": 7,
+        "filename": "hellfire.mpq"
+      },
+      {
+        "id": 9,
+        "filename": "hellfire.ini"
+      },
+      {
+        "id": 10,
+        "filename": "single_0.hsv"
+      },
+      {
+        "id": 11,
+        "filename": "single_1.hsv"
+      },
+      {
+        "id": 12,
+        "filename": "single_2.hsv"
+      },
+      {
+        "id": 13,
+        "filename": "single_3.hsv"
+      },
+      {
+        "id": 14,
+        "filename": "single_4.hsv"
+      },
+      {
+        "id": 15,
+        "filename": "single_5.hsv"
+      },
+      {
+        "id": 16,
+        "filename": "single_6.hsv"
+      },
+      {
+        "id": 17,
+        "filename": "single_7.hsv"
+      },
+      {
+        "id": 18,
+        "filename": "single_8.hsv"
+      },
+      {
+        "id": 19,
+        "filename": "single_9.hsv"
+      },
+      {
+        "id": 20,
+        "filename": "hfmonk.mpq"
+      },
+      {
+        "id": 21,
+        "filename": "hfmusic.mpq"
+      },
+      {
+        "id": 22,
+        "filename": "hfvoice.mpq"
+      }
+    ]
+  }
 }

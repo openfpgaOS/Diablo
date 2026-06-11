@@ -75,6 +75,23 @@ uint32_t          Smacker_GetNumFrames         (SmackerHandle &handle);
 void              Smacker_GetFrameSize         (SmackerHandle &handle, uint32_t &width, uint32_t &height);
 uint32_t          Smacker_GetCurrentFrameNum   (SmackerHandle &handle);
 uint32_t          Smacker_GetNextFrame         (SmackerHandle &handle);
+
+/* Audio-priority playback for movies that cannot decode video at realtime:
+ * in keyframes-only mode ReadPacket still parses palette + audio chunks
+ * (cheap, self-contained) but byte-skips the video chunk of every
+ * non-keyframe -- the picture freezes on the last keyframe, which is always
+ * self-contained (keyframe flag = bit 0 of the frame-size table entry), so
+ * it can never show delta-corrupted pixels. */
+void              Smacker_SetVideoKeyframesOnly(SmackerHandle &handle, int enable);
+/* Nonzero if the last Smacker_GetNextFrame produced fresh pixels. */
+int               Smacker_DidDecodeVideo       (SmackerHandle &handle);
+/* In keyframes-only mode: force the NEXT frame's video chunk to decode even
+ * without a keyframe flag. The delta then applies to a stale canvas --
+ * static blocks were static anyway, moving blocks are re-coded fresh, so
+ * the cost is bounded ghosting that self-heals at scene cuts. Needed
+ * because Blizzard's encoder flags NO keyframes at all (measured: zero in
+ * every DIABDAT movie). */
+void              Smacker_ForceNextVideoDecode (SmackerHandle &handle);
 float             Smacker_GetFrameRate         (SmackerHandle &handle);
 bool              Smacker_DidPaletteChange     (SmackerHandle &handle);
 void              Smacker_GetPalette           (SmackerHandle &handle, uint8_t *palette);
@@ -123,6 +140,9 @@ class SmackerDecoder
 		uint32_t GetCurrentFrameNum();
 		float GetFrameRate();
 		void GetNextFrame();
+		bool videoKeyframesOnly = false;
+		bool forceNextVideoDecode = false;
+		bool lastFrameHadVideo = true;
 		void Rewind();
 
 	private:

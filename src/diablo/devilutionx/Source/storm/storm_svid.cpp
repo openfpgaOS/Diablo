@@ -23,6 +23,7 @@
 
 #ifdef OPENFPGAOS
 extern "C" void of_aulib_set_max_buffered_pairs(int pairs);
+extern "C" int of_aulib_buffered_pairs(void);
 #ifdef OF_PERF_TRACE
 // Telemetry: feeds the shim's perf line. The 'draw' column is otherwise
 // idle during movies, so it reports per-frame SVid decode time there.
@@ -336,6 +337,19 @@ struct OfSVidFrame {
 	bool paletteChanged;
 };
 constexpr int OfSVidQueueCap = 6;
+// Audio-priority playback for movies too heavy to decode at realtime:
+// soundtrack decodes fully (~1 ms/frame), picture updates at keyframes
+// only (the decoder byte-skips other video chunks). See SVidPlayBegin.
+bool ofSVidAudioOnly;
+bool ofSVidAudioOnlyPresentPending;
+// Measured decode feasibility (EMA of per-frame decode us, alpha=1/4).
+// Resolution alone cannot predict cost -- the Hellfire intro is 320x240
+// (under any sane pixel gate) yet decodes at ~150 ms/frame because cost
+// scales with SYMBOL density, not pixels. Measure and switch instead.
+uint32_t ofSVidDecodeEmaUs;
+uint32_t ofSVidDecodeCount;
+// Audio-priority picture cadence: frames since the last forced video decode.
+uint32_t ofSVidFramesSinceVideo;
 OfSVidFrame OfSVidQueue[OfSVidQueueCap];
 int ofSVidQHead;
 int ofSVidQCount;
@@ -344,9 +358,15 @@ bool ofSVidSkippedPrev;
 
 void OfSVidQueueReset()
 {
+	/* NOTE: ofSVidAudioOnly is NOT reset here -- the feasibility gate in
+	 * SVidPlayBegin sets it before this runs; it is cleared at the gate
+	 * itself and in OfSVidQueueFree. */
 	ofSVidQHead = 0;
 	ofSVidQCount = 0;
 	ofSVidEof = false;
+	ofSVidDecodeEmaUs = 0;
+	ofSVidDecodeCount = 0;
+	ofSVidFramesSinceVideo = 0;
 	ofBlitSrc = nullptr;
 	ofSVidSkippedPrev = false;
 	ofSVidBandFills = 0;
@@ -355,8 +375,26 @@ void OfSVidQueueReset()
 void OfSVidQueueFree()
 {
 	OfSVidQueueReset();
+	ofSVidAudioOnly = false;
+	ofSVidAudioOnlyPresentPending = false;
 	for (auto &f : OfSVidQueue)
 		f.pixels = nullptr;
+}
+
+// Switch to audio-priority playback (soundtrack + keyframes only). Safe
+// mid-movie: skipping starts after a fully decoded frame, and the next
+// decoded frame is a keyframe, so the held picture is never corrupt.
+void OfSVidEngageAudioOnly(const char *why)
+{
+	if (ofSVidAudioOnly)
+		return;
+	Log("SVid: audio-priority (keyframe) playback engaged ({})", why);
+	ofSVidAudioOnly = true;
+	Smacker_SetVideoKeyframesOnly(SVidHandle, 1);
+	of_aulib_set_max_buffered_pairs(16384);
+	// Queued frames are left alone (the audio-only path ignores them and
+	// OfSVidQueueFree releases them at movie end); clearing them here
+	// mid-fill-loop would invalidate the caller's slot indexing.
 }
 
 // Decode one frame into the queue tail (audio pushed NOW = decode time).
@@ -373,14 +411,23 @@ bool OfSVidDecodeIntoQueue()
 		Smacker_Rewind(SVidHandle);
 	}
 
-#ifdef OF_PERF_TRACE
 	const Uint64 decodeStart = SDL_GetPerformanceCounter();
-#endif
 	Smacker_GetNextFrame(SVidHandle);
 	Smacker_GetFrame(SVidHandle, SVidFrameBuffer.get());
+	const uint32_t decodeUs = static_cast<uint32_t>(SDL_GetPerformanceCounter() - decodeStart);
 #ifdef OF_PERF_TRACE
-	of_perf_add_draw_us(static_cast<unsigned>(SDL_GetPerformanceCounter() - decodeStart));
+	of_perf_add_draw_us(decodeUs);
 #endif
+	ofSVidDecodeEmaUs = ofSVidDecodeCount == 0 ? decodeUs : (ofSVidDecodeEmaUs * 3 + decodeUs) / 4;
+	ofSVidDecodeCount++;
+	// Sustained decode over ~1.25x the frame budget cannot reach realtime;
+	// require a few samples so one slow keyframe cannot false-trigger.
+	// Fall through after engaging: this frame still queues and its audio
+	// still pushes (dropping either loses 66 ms of soundtrack).
+	if (!ofSVidAudioOnly && ofSVidDecodeCount >= 4
+	    && ofSVidDecodeEmaUs > static_cast<uint32_t>(SVidFrameLength * 1.25 / 1000.0) * 1000u) {
+		OfSVidEngageAudioOnly("measured decode rate");
+	}
 
 	OfSVidFrame &slot = OfSVidQueue[(ofSVidQHead + ofSVidQCount) % OfSVidQueueCap];
 	if (!slot.pixels)
@@ -405,6 +452,65 @@ bool OfSVidDecodeIntoQueue()
 	ofSVidQCount++;
 	return true;
 }
+
+#ifdef OPENFPGAOS
+// One frame step in audio-priority mode: parse the frame, push its audio,
+// decode pixels only if the decoder chose to (keyframe). Returns false at
+// end of stream. Sets freshPicture when SVidFrameBuffer has new pixels.
+bool OfSVidAudioOnlyStep(bool &freshPicture)
+{
+	if (Smacker_GetCurrentFrameNum(SVidHandle) >= Smacker_GetNumFrames(SVidHandle)) {
+		if (!SVidLoop)
+			return false;
+		Smacker_Rewind(SVidHandle);
+	}
+	// These movies carry NO keyframe flags (measured: zero across the whole
+	// corpus), so the picture would never refresh on its own. Force a video
+	// decode every K frames; the delta lands on a slightly stale canvas --
+	// static blocks were static anyway, moving blocks are re-coded fresh --
+	// so the cost is bounded ghosting that self-heals at scene cuts.
+	// AUDIO RULES: a forced decode stalls audio processing for ~ema us, so
+	// it must (a) keep a <=40% duty cycle (K from ema/26 ms, min 3) and
+	// (b) only happen when the ring has banked at least 1.5x the expected
+	// stall -- the picture is strictly subordinate to the soundtrack.
+	{
+		uint32_t k = ofSVidDecodeEmaUs / 26000u;
+		if (k < 3) k = 3;
+		const uint32_t needPairs = ofSVidDecodeEmaUs * 48u / 1000u * 3u / 2u;
+		if (ofSVidFramesSinceVideo >= k
+		    && static_cast<uint32_t>(of_aulib_buffered_pairs()) >= needPairs)
+			Smacker_ForceNextVideoDecode(SVidHandle);
+	}
+	const Uint64 ofStepStart = SDL_GetPerformanceCounter();
+	Smacker_GetNextFrame(SVidHandle);
+	if (Smacker_DidDecodeVideo(SVidHandle)) {
+		// Keep the cost estimate live: the ema was learned on the movie's
+		// first frames (often cheap fade-ins) and would otherwise stay
+		// frozen while real frames cost 2x more.
+		const uint32_t decodeUs = static_cast<uint32_t>(SDL_GetPerformanceCounter() - ofStepStart);
+		ofSVidDecodeEmaUs = (ofSVidDecodeEmaUs * 3 + decodeUs) / 4;
+#ifdef OF_PERF_TRACE
+		of_perf_add_draw_us(decodeUs);
+#endif
+		Smacker_GetFrame(SVidHandle, SVidFrameBuffer.get());
+		freshPicture = true;
+		ofSVidFramesSinceVideo = 0;
+	} else {
+		ofSVidFramesSinceVideo++;
+	}
+#ifndef NOSOUND
+	if (HasAudio()) {
+		std::int16_t *buf = SVidAudioBuffer.get();
+		const auto len = Smacker_GetAudioData(SVidHandle, 0, buf);
+		if (SVidAudioDepth == 16)
+			SVidAudioDecoder->PushSamples(buf, len / 2);
+		else
+			SVidAudioDecoder->PushSamples(reinterpret_cast<const std::uint8_t *>(buf), len);
+	}
+#endif
+	return true;
+}
+#endif
 
 // Apply a queued frame's palette snapshot to the output surface so the
 // present pushes it to the hardware WITH the matching pixels. (The live
@@ -492,6 +598,25 @@ bool SVidPlayBegin(const char *filename, int flags)
 	SVidFrameLength = 1000000.0 / Smacker_GetFrameRate(SVidHandle);
 	Smacker_GetFrameSize(SVidHandle, SVidWidth, SVidHeight);
 
+#ifdef OPENFPGAOS
+	// Decode-feasibility gate. Smacker is delta-coded (every frame must be
+	// decoded -- frame skipping is impossible) and its audio is interleaved
+	// per frame, so a movie that cannot decode video at realtime cannot
+	// play normally at 100 MHz. Diablo's movies are all 320x156 (measured
+	// 18-54 ms/frame); Hellfire ships higher-resolution videos that
+	// measured ~130 ms/frame on HW. Those switch to AUDIO-PRIORITY mode:
+	// the soundtrack plays perfectly (audio chunks are self-contained and
+	// cost ~1 ms/frame) while the picture updates only at keyframes --
+	// scene cuts -- with non-keyframe video chunks byte-skipped unread.
+	ofSVidAudioOnly = false;
+	if (static_cast<uint32_t>(SVidWidth) * SVidHeight > 80000u) {
+		// Clearly infeasible by size alone; smaller-but-dense movies are
+		// caught by the measured-decode-rate switch in OfSVidDecodeIntoQueue.
+		Log("SVid: {}x{} movie", SVidWidth, SVidHeight);
+		OfSVidEngageAudioOnly("frame size");
+	}
+#endif
+
 #ifndef USE_SDL1
 	if (renderer != nullptr) {
 		int renderWidth = static_cast<int>(SVidWidth);
@@ -535,7 +660,7 @@ bool SVidPlayBegin(const char *filename, int flags)
 	// OfSVidDecodeIntoQueue advances to frame 2 before snapshotting and
 	// frame 1's pixels AND audio (overwritten by the decoder's next
 	// ReadPacket) are silently dropped.
-	{
+	if (!ofSVidAudioOnly) {
 		OfSVidFrame &slot = OfSVidQueue[0];
 		if (!slot.pixels)
 			slot.pixels = std::unique_ptr<uint8_t[]> { new uint8_t[static_cast<size_t>(SVidWidth * SVidHeight)] };
@@ -560,7 +685,36 @@ bool SVidPlayBegin(const char *filename, int flags)
 	// Prefill the rest of the queue BEFORE starting the present clock: this
 	// banks the audio cushion (the whole point of the queue) as ~150 ms of
 	// movie-start latency instead of late presents during the first frames.
-	while (ofSVidQCount < OfSVidQueueCap && OfSVidDecodeIntoQueue()) {
+	while (!ofSVidAudioOnly && ofSVidQCount < OfSVidQueueCap && OfSVidDecodeIntoQueue()) {
+	}
+	if (ofSVidAudioOnly) {
+		// Audio-priority setup -- reached either via the size gate (queue
+		// untouched) or via mid-prefill engagement (some frames queued;
+		// their audio is already pushed and their pictures are ignored).
+		// The latest decoded picture presents on the first Continue; then
+		// bank ~0.5 s of soundtrack (skipped frames cost ~1-2 ms each)
+		// with a deeper ring cushion so a 150-300 ms forced decode cannot
+		// drain it mid-scene.
+		of_aulib_set_max_buffered_pairs(16384);
+		ofSVidAudioOnlyPresentPending = true;
+#ifndef NOSOUND
+		// Only the size-gate path skipped the queue seed; its frame-1
+		// audio was never pushed. Mid-prefill engagement already pushed
+		// every processed frame's audio -- pushing again would duplicate.
+		if (ofSVidQCount == 0 && HasAudio()) {
+			std::int16_t *buf = SVidAudioBuffer.get();
+			const auto len = Smacker_GetAudioData(SVidHandle, 0, buf);
+			if (SVidAudioDepth == 16)
+				SVidAudioDecoder->PushSamples(buf, len / 2);
+			else
+				SVidAudioDecoder->PushSamples(reinterpret_cast<const std::uint8_t *>(buf), len);
+		}
+#endif
+		bool fresh = false;
+		for (int i = 0; i < 8; ++i) {
+			if (!OfSVidAudioOnlyStep(fresh))
+				break;
+		}
 	}
 #endif
 	SVidFrameEnd = SDL_GetTicks() * 1000.0 + SVidFrameLength;
@@ -571,6 +725,30 @@ bool SVidPlayBegin(const char *filename, int flags)
 bool SVidPlayContinue()
 {
 #ifdef OPENFPGAOS
+	if (ofSVidAudioOnly) {
+		// Pace by the audio clock: process every frame due by now (audio
+		// parse is ~1-2 ms; only keyframes cost a real decode). Present
+		// only when fresh pixels arrived; otherwise just keep pumping.
+		bool freshPicture = ofSVidAudioOnlyPresentPending;
+		ofSVidAudioOnlyPresentPending = false;
+		double now = SDL_GetTicks() * 1000.0;
+		while (now >= SVidFrameEnd) {
+			if (!OfSVidAudioOnlyStep(freshPicture))
+				return false; // end of movie
+			SVidFrameEnd += SVidFrameLength;
+			now = SDL_GetTicks() * 1000.0;
+		}
+		if (freshPicture) {
+			if (Smacker_DidPaletteChange(SVidHandle))
+				UpdatePalette();
+			if (!BlitFrame())
+				return false;
+		} else {
+			SDL_Delay(1); // audio pump tick
+		}
+		return true;
+	}
+
 	// Keep the queue topped up: always at least one frame, and use the
 	// schedule slack (4 ms margin) to run ahead -- this is what banks the
 	// audio cushion. A slow decode here makes the next present late; the

@@ -90,6 +90,11 @@ void of_platform_init(void)
 		char name[24];
 		snprintf(name, sizeof name, "single_%d.sv", i);
 		of_file_slot_register(10 + i, name);
+		/* Hellfire names its saves .hsv; same slots, separate SD files
+		 * (the Hellfire instance JSON binds single_N.hsv). Registering
+		 * both is safe: each game only ever opens its own extension. */
+		snprintf(name, sizeof name, "single_%d.hsv", i);
+		of_file_slot_register(10 + i, name);
 	}
 	of_file_slot_register(9, "diablo.ini");
 	of_file_slot_register(9, "hellfire.ini"); /* Hellfire instance binds this name */
