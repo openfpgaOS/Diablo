@@ -420,13 +420,23 @@ bool OfSVidDecodeIntoQueue()
 #endif
 	ofSVidDecodeEmaUs = ofSVidDecodeCount == 0 ? decodeUs : (ofSVidDecodeEmaUs * 3 + decodeUs) / 4;
 	ofSVidDecodeCount++;
-	// Sustained decode over ~1.25x the frame budget cannot reach realtime;
-	// require a few samples so one slow keyframe cannot false-trigger.
-	// Fall through after engaging: this frame still queues and its audio
-	// still pushes (dropping either loses 66 ms of soundtrack).
-	if (!ofSVidAudioOnly && ofSVidDecodeCount >= 4
-	    && ofSVidDecodeEmaUs > static_cast<uint32_t>(SVidFrameLength * 1.25 / 1000.0) * 1000u) {
-		OfSVidEngageAudioOnly("measured decode rate");
+	// Engage audio-priority on either of two signals (fall through after
+	// engaging: this frame still queues and its audio still pushes):
+	// (a) HOPELESS: decode >= 2x the frame budget -- no cushion survives
+	//     that (Hellfire-class, ~150 ms vs 66).
+	// (b) SYMPTOM: the audio cushion is actually draining (< ~60 ms)
+	//     while decode runs over budget. Diablo's own movies burst to
+	//     1.4-1.8x at scene cuts but their cushion never drops below
+	//     ~99 ms -- a cost threshold alone false-triggered on them and
+	//     stuck them in slideshow mode (one-way at the time).
+	if (!ofSVidAudioOnly) {
+		const uint32_t budgetUs = static_cast<uint32_t>(SVidFrameLength / 1000.0) * 1000u;
+		if (ofSVidDecodeCount >= 4 && ofSVidDecodeEmaUs > budgetUs * 2u)
+			OfSVidEngageAudioOnly("decode hopeless");
+		else if (ofSVidDecodeCount >= 8
+		    && ofSVidDecodeEmaUs > budgetUs + budgetUs / 8u
+		    && of_aulib_buffered_pairs() < 2880 /* ~60 ms */)
+			OfSVidEngageAudioOnly("audio cushion draining");
 	}
 
 	OfSVidFrame &slot = OfSVidQueue[(ofSVidQHead + ofSVidQCount) % OfSVidQueueCap];
@@ -495,6 +505,22 @@ bool OfSVidAudioOnlyStep(bool &freshPicture)
 		Smacker_GetFrame(SVidHandle, SVidFrameBuffer.get());
 		freshPicture = true;
 		ofSVidFramesSinceVideo = 0;
+		// Self-correct a false engagement: if forced decodes now run well
+		// under budget and the cushion is healthy, return to full-rate
+		// playback (the next deltas land on the held canvas and self-heal
+		// exactly like the forced-decode path). Hysteresis vs the engage
+		// thresholds prevents flapping.
+		if (ofSVidDecodeEmaUs < static_cast<uint32_t>(SVidFrameLength * 0.85 / 1000.0) * 1000u
+		    && of_aulib_buffered_pairs() > 7200 /* ~150 ms */) {
+			Log("SVid: decode recovered; resuming full-rate playback");
+			ofSVidAudioOnly = false;
+			Smacker_SetVideoKeyframesOnly(SVidHandle, 0);
+			of_aulib_set_max_buffered_pairs(12288);
+			ofSVidQHead = 0;
+			ofSVidQCount = 0;
+			ofSVidAudioOnlyPresentPending = false;
+			SVidFrameEnd = SDL_GetTicks() * 1000.0 + SVidFrameLength;
+		}
 	} else {
 		ofSVidFramesSinceVideo++;
 	}

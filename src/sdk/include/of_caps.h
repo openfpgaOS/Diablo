@@ -120,6 +120,21 @@ extern "C" {
                                          * variant and is NOT gated by this
                                          * bit. */
 
+#define OF_HW_SAVE_DT_WORD  (1 << 24)   /* Entry-resolved nonvolatile size
+                                         * commits: the SAVE_DT_WORD register
+                                         * (sysreg 0xC8) takes a raw datatable
+                                         * WORD address (entry*2+1) so size
+                                         * commits land on the entry whose id
+                                         * word matches the data slot, instead
+                                         * of the legacy fixed "entry 8 =
+                                         * pre-save, 9-18 = saves" mapping
+                                         * (only valid when every declared
+                                         * slot loaded a file -- the Pocket
+                                         * compacts the table to loaded
+                                         * slots).  OS-internal; the OS
+                                         * probes this bit and falls back to
+                                         * SAVE_DT_SLOT on old bitstreams. */
+
 /* Convenience: all the GPU bits an app might care about for renderer choice. */
 #define OF_HW_GPU_LITE_MASK  (OF_HW_GPU_SPAN | OF_HW_GPU_FRAGPIPE)
 #define OF_HW_GPU_FULL_MASK  (OF_HW_GPU_LITE_MASK | OF_HW_GPU_VCOLOR | \

@@ -24,8 +24,8 @@ mixer for sound.
 
 ## Installing
 
-1. Copy the core onto the SD card: merge this release's `Cores/`, `Assets/`,
-   and `Saves/` folders into the matching folders at the root of the card.
+1. Copy the core onto the SD card: merge this release's `Cores/` and `Assets/`
+   folders into the matching folders at the root of the card.
 2. Put your game data into **`Assets/diablo/common/`** on the card:
 
    ```
@@ -85,12 +85,11 @@ left click, **Select + R1** a right click.
 
 ## Saves and settings
 
-Saved games and options live in **`Saves/diablo/common/`** on the SD card
-(the release ships starter files there — merge the `Saves/` folder when
-installing). The Pocket writes them back **when you leave the core through
-the Analogue menu** (or when the device sleeps) — exit that way after
-playing. Powering off abruptly can lose progress made since the last
-save-and-exit.
+Saved games and options live in **`Saves/diablo/common/`** on the SD card;
+the Pocket creates the files automatically on first use. It writes them
+back **when you leave the core through the Analogue menu** (or when the
+device sleeps) — exit that way after playing. Powering off abruptly can
+lose progress made since the last save-and-exit.
 
 - Save in game via **Start → Save Game**. Ten single-player slots are available.
 - Options changed in **Start → Options** persist the same way.
@@ -113,7 +112,6 @@ save-and-exit.
 | Missing menu art / crash at title | `devilutionx.mpq` is missing — it is required |
 | `Missing: fonts.mpq` in the log | Harmless; only needed for some languages |
 | Hellfire entry quits to menu | Hellfire needs all four of `hellfire.mpq`, `hfmonk.mpq`, `hfmusic.mpq`, `hfvoice.mpq` |
-| `Failed to write ini` / `Save subsystem disabled` | The starter files from the release's `Saves/` folder are missing on the card |
 | Settings did not stick | Exit the core through the Pocket menu so the card is written |
 
 ## Building from source

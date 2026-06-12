@@ -118,7 +118,7 @@
         "id": 8,
         "name": "Shared Config",
         "required": false,
-        "parameters": "0x80",
+        "parameters": "0x84",
         "nonvolatile": true,
         "address": "0x20380000",
         "size_maximum": "0x40000",
@@ -131,19 +131,20 @@
         "id": 9,
         "name": "Settings",
         "required": false,
-        "parameters": "0x80",
+        "parameters": "0x84",
         "nonvolatile": true,
         "address": "0x200C0000",
         "size_maximum": "0x40000",
         "extensions": [
           "ini"
-        ]
+        ],
+        "filename": "diablo.ini"
       },
       {
         "id": 10,
         "name": "Save 0",
         "required": false,
-        "parameters": "0x80",
+        "parameters": "0x84",
         "nonvolatile": true,
         "address": "0x20100000",
         "size_maximum": "0x40000",
@@ -151,13 +152,14 @@
           "sv",
           "sav",
           "hsv"
-        ]
+        ],
+        "filename": "single_0.sv"
       },
       {
         "id": 11,
         "name": "Save 1",
         "required": false,
-        "parameters": "0x80",
+        "parameters": "0x84",
         "nonvolatile": true,
         "address": "0x20140000",
         "size_maximum": "0x40000",
@@ -165,13 +167,14 @@
           "sv",
           "sav",
           "hsv"
-        ]
+        ],
+        "filename": "single_1.sv"
       },
       {
         "id": 12,
         "name": "Save 2",
         "required": false,
-        "parameters": "0x80",
+        "parameters": "0x84",
         "nonvolatile": true,
         "address": "0x20180000",
         "size_maximum": "0x40000",
@@ -179,13 +182,14 @@
           "sv",
           "sav",
           "hsv"
-        ]
+        ],
+        "filename": "single_2.sv"
       },
       {
         "id": 13,
         "name": "Save 3",
         "required": false,
-        "parameters": "0x80",
+        "parameters": "0x84",
         "nonvolatile": true,
         "address": "0x201C0000",
         "size_maximum": "0x40000",
@@ -193,13 +197,14 @@
           "sv",
           "sav",
           "hsv"
-        ]
+        ],
+        "filename": "single_3.sv"
       },
       {
         "id": 14,
         "name": "Save 4",
         "required": false,
-        "parameters": "0x80",
+        "parameters": "0x84",
         "nonvolatile": true,
         "address": "0x20200000",
         "size_maximum": "0x40000",
@@ -207,13 +212,14 @@
           "sv",
           "sav",
           "hsv"
-        ]
+        ],
+        "filename": "single_4.sv"
       },
       {
         "id": 15,
         "name": "Save 5",
         "required": false,
-        "parameters": "0x80",
+        "parameters": "0x84",
         "nonvolatile": true,
         "address": "0x20240000",
         "size_maximum": "0x40000",
@@ -221,13 +227,14 @@
           "sv",
           "sav",
           "hsv"
-        ]
+        ],
+        "filename": "single_5.sv"
       },
       {
         "id": 16,
         "name": "Save 6",
         "required": false,
-        "parameters": "0x80",
+        "parameters": "0x84",
         "nonvolatile": true,
         "address": "0x20280000",
         "size_maximum": "0x40000",
@@ -235,13 +242,14 @@
           "sv",
           "sav",
           "hsv"
-        ]
+        ],
+        "filename": "single_6.sv"
       },
       {
         "id": 17,
         "name": "Save 7",
         "required": false,
-        "parameters": "0x80",
+        "parameters": "0x84",
         "nonvolatile": true,
         "address": "0x202C0000",
         "size_maximum": "0x40000",
@@ -249,13 +257,14 @@
           "sv",
           "sav",
           "hsv"
-        ]
+        ],
+        "filename": "single_7.sv"
       },
       {
         "id": 18,
         "name": "Save 8",
         "required": false,
-        "parameters": "0x80",
+        "parameters": "0x84",
         "nonvolatile": true,
         "address": "0x20300000",
         "size_maximum": "0x40000",
@@ -263,13 +272,14 @@
           "sv",
           "sav",
           "hsv"
-        ]
+        ],
+        "filename": "single_8.sv"
       },
       {
         "id": 19,
         "name": "Save 9",
         "required": false,
-        "parameters": "0x80",
+        "parameters": "0x84",
         "nonvolatile": true,
         "address": "0x20340000",
         "size_maximum": "0x40000",
@@ -277,7 +287,8 @@
           "sv",
           "sav",
           "hsv"
-        ]
+        ],
+        "filename": "single_9.sv"
       },
       {
         "id": 20,

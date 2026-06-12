@@ -63,12 +63,11 @@ Version: $GAME_VERSION
 
 Installation:
 1. Extract this ZIP to your Analogue Pocket SD card root
-2. Merge with existing folders if prompted (including Saves/)
+2. Merge with existing folders if prompted
 3. The game will appear in the Pocket menu
 
-Settings and save files live in Saves/<platform>/common/ -- the ZIP ships
-starter files there; in-game saves persist when you exit the core through
-the Pocket menu.
+Settings and save files are created automatically in Saves/<platform>/
+common/; they persist when you exit the core through the Pocket menu.
 EOF
 
     # Create ZIP
