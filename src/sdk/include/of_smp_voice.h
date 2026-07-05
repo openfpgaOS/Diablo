@@ -70,6 +70,11 @@ typedef struct {
     int32_t pan_mul_l;
     int32_t pan_mul_r;
     uint32_t age;
+    /* tick_counter at which this voice last entered (or has been held in)
+     * ENV_SUSTAIN.  Reset every tick the voice is in any other stage, so
+     * tick_counter - sustain_since measures time spent CONTINUOUSLY in
+     * sustain -- used by the hung-voice guard (SMP_VOICE_MAX_SUSTAIN_TICKS). */
+    uint32_t sustain_since;
     /* Countdown of smp_voice_tick calls until the underlying non-looping
      * sample has played to its natural end.  0 = not tracked (looping
      * sample, or untracked).  When this reaches 0 from a positive value,

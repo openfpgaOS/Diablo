@@ -321,6 +321,13 @@ struct of_services_table {
      * The hook MUST NOT issue a blocking file read (nested invocation is
      * suppressed by the kernel). Pass NULL to clear. */
     void      (*file_set_idle_hook)(void (*hook)(void));
+
+    /* -- Dock state (append-only) --
+     * Nonzero while the handheld sits in its dock (external display,
+     * detached controllers).  Live state, not a boot-time latch --
+     * dock/undock happens at runtime, so re-check across frames.
+     * Always 1 on console targets (MiSTer). */
+    int       (*input_is_docked)(void);
 };
 
 #ifndef OF_PC
@@ -331,6 +338,13 @@ struct of_services_table {
 extern const struct of_services_table *_of_svc_ptr;
 
 #define OF_SVC (_of_svc_ptr)
+
+#else /* OF_PC — no OS service table on the desktop.  OF_SVC is a null
+       * pointer of the right type so `if (OF_SVC && OF_SVC->...)` checks
+       * typecheck and short-circuit (the soft renderer / SDL video path
+       * runs instead of the GPU service path). */
+
+#define OF_SVC ((const struct of_services_table *)0)
 
 #endif /* OF_PC */
 

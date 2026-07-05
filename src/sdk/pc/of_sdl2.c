@@ -561,6 +561,12 @@ void of_input_set_deadzone(int16_t deadzone) {
     (void)deadzone;
 }
 
+int of_input_is_docked(void) {
+    /* No dock notion on the desktop; report handheld so dock-gated
+     * app behavior stays off during PC development. */
+    return 0;
+}
+
 /* ======================================================================
  * Audio
  * ====================================================================== */

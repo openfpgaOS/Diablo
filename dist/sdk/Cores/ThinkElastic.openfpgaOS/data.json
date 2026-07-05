@@ -24,8 +24,7 @@
                 "name": "OS Config",
                 "required": false,
                 "parameters": 0,
-                "extensions": ["ini"],
-                "deferload": true
+                "extensions": ["ini"]
             },
             {
                 "id": 3,

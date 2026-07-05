@@ -37,6 +37,7 @@ NAME=""
 SHORT=""
 PLATFORM=""
 TARGET="pocket"
+VARIANT="os25"     # os25 = 2.5D / full HW mixer; os30 = Quake2 (3D, HW vertex-tri)
 
 # ── Color helpers ───────────────────────────────────────────────────
 GREEN='\033[92m'
@@ -60,6 +61,7 @@ while [[ $# -gt 0 ]]; do
         --version)     VERSION="$2"; shift 2 ;;
         --icon)        ICON="$2"; shift 2 ;;
         --target)      TARGET="$2"; shift 2 ;;
+        --variant)     VARIANT="$2"; shift 2 ;;
         --date)        DATE="$2"; shift 2 ;;
         -h|--help)
             echo "Usage: $0 [--batch] [options]"
@@ -73,6 +75,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --version VERSION   Version string [1.0.0]"
             echo "  --icon PATH         Core icon (.bin)"
             echo "  --target TARGET     Platform target [pocket]"
+            echo "  --variant VARIANT   Pocket bitstream variant: os25|os30 [os25]"
             exit 0 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
@@ -112,6 +115,8 @@ if [[ $BATCH -eq 0 ]]; then
 
     VERSION=$(ask "Version" "$VERSION")
     ICON=$(ask "Core icon path (optional, Enter to skip)" "$ICON")
+    [[ "$TARGET" == "pocket" ]] && \
+        VARIANT=$(ask "Pocket bitstream variant (os25=2.5D/full mixer, os30=Quake2 3D)" "$VARIANT")
 
     echo
 fi
@@ -121,6 +126,16 @@ fi
 [[ -z "$SHORT" ]] && SHORT=$(derive_short "$NAME")
 [[ -z "$AUTHOR" ]] && { echo "Error: --author required"; exit 1; }
 [[ -z "$PLATFORM" ]] && PLATFORM=$(echo "$SHORT" | tr '[:upper:]' '[:lower:]')
+
+# Bitstream variant → the openFPGA core filename the core.json points at.
+# The name IS the variant token (os25.rbf_r / os30.rbf_r), kept short for
+# the Pocket's ~15-char filename cap.  Successive openfpgaOS builds publish
+# os25.rbf_r / os30.rbf_r into runtime/pocket/; the core picks one by name.
+case "$VARIANT" in
+    os30)    BITSTREAM="os30" ;;
+    os25|"") VARIANT="os25"; BITSTREAM="os25" ;;
+    *) echo "Error: --variant must be os25 or os30 (got '$VARIANT')"; exit 1 ;;
+esac
 
 SNAME=$(echo "$SHORT" | tr '[:upper:]' '[:lower:]')
 CORE_ID="${AUTHOR}.${SHORT}"
@@ -135,6 +150,7 @@ if [[ $BATCH -eq 0 ]]; then
     echo "  Core ID:  $CORE_ID"
     echo "  Version:  $VERSION"
     echo "  Target:   $TARGET"
+    [[ "$TARGET" == "pocket" ]] && echo "  Variant:  $VARIANT ($BITSTREAM.rbf_r)"
     echo "  Source:   src/$SNAME/"
     echo
 
@@ -171,6 +187,7 @@ else
              s/{{AUTHOR}}/$AUTHOR/g; \
              s/{{PLATFORM}}/$PLATFORM/g; \
              s/{{VERSION}}/$VERSION/g; \
+             s/{{BITSTREAM}}/$BITSTREAM/g; \
              s/{{DATE}}/$DATE/g; \
              s/{{YEAR}}/$YEAR/g" \
             "$src" > "$dst"

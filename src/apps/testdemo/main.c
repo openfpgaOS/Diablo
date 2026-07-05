@@ -225,13 +225,17 @@ static const test_fn tests[] = {
     test_mixer,
     test_mixer_adv,
     test_mixer_stress,
-    // --- bisecting 3rd-pass hang ---
-    // test_midi,
-    // test_midi_smp,
+    /* MIDI/audio coverage. test_midi/test_midi_smp now wait via
+     * midi_wait_ms() (interrupts enabled, ISR-driven) instead of calling
+     * of_midi_pump() themselves, so they no longer race of_midi_play()'s
+     * timer-ISR pump — the fix for the old MD.20b+ stall cascade.
+     * Re-verify on hardware across all NUM_ITERATIONS passes. */
+    test_midi,
+    test_midi_smp,
     test_net,
     test_interact,
-    // test_audio,
-    // test_audio_stream,
+    test_audio,
+    test_audio_stream,
     test_printf,
     test_printf_edge,
     test_string,

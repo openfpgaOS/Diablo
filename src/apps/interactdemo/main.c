@@ -5,11 +5,16 @@
 //------------------------------------------------------------------------------
 
 /*
- * interactdemo -- live view of the public openfpgaOS input stack.
+ * interactdemo -- live view of the platform "interact" surface: the
+ * menu/option variables an app reads via of_interact_get(), plus the
+ * public input stack (controllers, Analogizer/SNAC, keyboard, mouse)
+ * those menus sit on top of.
  *
- * SNAC is owned by the OS and folded into the canonical player snapshots.
- * This app intentionally uses only SDK input/Analogizer calls; it does not
- * read hardware registers or call any SNAC-specific APIs.
+ * of_interact_get(index) returns the value the platform menu set for
+ * variable `index` (Pocket interact.json, MiSTer OSD); the "Interact"
+ * row shows the first few live. SNAC is owned by the OS and folded into
+ * the canonical player snapshots — this app uses only SDK input /
+ * Analogizer / interact calls and reads no hardware registers.
  */
 
 #include "of.h"
@@ -230,7 +235,11 @@ static void read_state(view_state_t *state)
     of_input_state(1, &state->p2);
     of_input_keyboard_state(&state->keyboard);
     of_input_mouse_state(&state->mouse);
-    state->analog_ok = (of_analogizer_state(&state->analog) == 0);
+    /* Only read the Analogizer when the platform advertises it (OF_HW_ANALOGIZER
+     * is clear on MiSTer); the panel then shows n/a and the input view still
+     * works.  This is the one genuinely-conditional HW bit this demo touches. */
+    state->analog_ok = of_has_feature(OF_HW_ANALOGIZER) &&
+                       (of_analogizer_state(&state->analog) == 0);
 }
 
 static void update_analogizer(const view_state_t *state)
@@ -362,6 +371,23 @@ static void update_mouse(const view_state_t *state)
            (unsigned)m->report_counter);
 }
 
+/* of_interact_get(index) reads the platform menu/option variables the core
+ * declares (Pocket interact.json, MiSTer OSD). Indices run 0..
+ * OF_INTERACT_MAX_VARS-1; a variable reads 0 until the core declares it and
+ * the user changes it from the menu. We show the first four live. */
+static void update_interact(void)
+{
+    clear_row(25);
+    FG_YELLOW;
+    printf("Interact ");
+    RESET;
+    printf("v0-3: %lx %lx %lx %lx",
+           (unsigned long)of_interact_get(0),
+           (unsigned long)of_interact_get(1),
+           (unsigned long)of_interact_get(2),
+           (unsigned long)of_interact_get(3));
+}
+
 int main(void)
 {
     view_state_t state;
@@ -377,6 +403,7 @@ int main(void)
         update_player(14, "P2", 1, &state.p2, &state);
         update_keyboard(&state);
         update_mouse(&state);
+        update_interact();
         usleep(16000);
     }
 }

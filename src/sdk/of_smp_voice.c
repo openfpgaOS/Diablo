@@ -29,6 +29,21 @@
 #define SMP_VOICE_ENABLE_TICK_STATS 0
 #endif
 
+/* Hung-voice guard.  A voice with no natural end -- a LOOPING sample, or a
+ * one-shot whose length we could not track -- only leaves ENV_SUSTAIN on a
+ * note-off (-> ENV_RELEASE -> ENV_DONE).  If that note-off is dropped -- e.g.
+ * an iMUSE jump or track change skips it -- the voice sustains forever (the
+ * "stuck notes" heard in DOTT / Fate of Atlantis MIDI).  smp_voice_tick
+ * force-releases a voice that has been CONTINUOUSLY in ENV_SUSTAIN past this
+ * cap (measured via v->sustain_since, so attack/decay/hold time is not
+ * counted -- a held note gets the full window).  At the 1 kHz tick rate
+ * 8000 = 8 s of held sustain.  Voices that self-terminate
+ * (sample_ticks_remaining > 0) are exempt, so a long one-shot is never
+ * clipped; voices in RELEASE or DECAY are never touched. */
+#ifndef SMP_VOICE_MAX_SUSTAIN_TICKS
+#define SMP_VOICE_MAX_SUSTAIN_TICKS 8000u
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Static state                                                       */
 /* ------------------------------------------------------------------ */
@@ -721,6 +736,7 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
     v->sustain_held = 0;
     v->mixer_voice = OF_MIXER_HANDLE_INVALID;
     v->age = tick_counter;
+    v->sustain_since = tick_counter;
 
     /* Pre-bake voice_base_vol = (velocity_gain × initial_attn_scale) >> 8.
      * One u8 field now replaces the two multiplies the old compute_vol_lr
@@ -910,6 +926,20 @@ void smp_voice_tick(void)
         if (z) {
             if (z->vib_lfo_to_pitch) lfo_advance(&v->vib_lfo);
             if (z->mod_lfo_to_pitch) lfo_advance(&v->mod_lfo);
+        }
+
+        /* Hung-voice guard (see SMP_VOICE_MAX_SUSTAIN_TICKS).  Measure time
+         * spent CONTINUOUSLY in ENV_SUSTAIN: reset the clock on every other
+         * stage so attack/decay/hold never counts against the cap.  Only act on
+         * voices with no natural end (sample_ticks_remaining == 0: looping or
+         * untracked) -- a tracked one-shot self-terminates via ENV_DONE above,
+         * so it is never clipped here even if its sample runs past the cap. */
+        if (v->vol_env.stage != ENV_SUSTAIN) {
+            v->sustain_since = tick_counter;
+        } else if (z && v->sample_ticks_remaining == 0 &&
+            (uint32_t)(tick_counter - v->sustain_since) > SMP_VOICE_MAX_SUSTAIN_TICKS) {
+            env_start_release(&v->vol_env, z->vol_release_ticks);
+            env_start_release(&v->mod_env, z->mod_release_ticks);
         }
 
         if (v->vol_env.stage == ENV_DONE) {

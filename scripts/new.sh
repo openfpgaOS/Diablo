@@ -116,7 +116,7 @@ if [[ "$KIND" == "sdk-app" ]]; then
 #
 # This is an SDK app, bundled into the shared SDK demo core. The
 # parent src/apps/Makefile builds and packages every SDK app together;
-# build/sdk/ is the resulting deployable.
+# build/pocket/sdk/ is the resulting deployable.
 #
 # Per-app overrides go above the include line, e.g.:
 #   SRCS = $(wildcard *.c) $(SDK_DIR)/of_midi.c
@@ -145,17 +145,25 @@ else
 #
 
 APP       = {{APP}}
-TARGET    = {{TARGET}}
+# Platform target: pocket (APF SD tree under build/pocket/<app>/) or
+# mister (disk-image bundle under build/mister/<app>/). Overridable per
+# invocation: `make TARGET=mister`, or from the SDK root Makefile.
+TARGET   ?= {{TARGET}}
+# MiSTer network target for `make copy TARGET=mister` (override: MISTER_IP=...).
+MISTER_IP ?= mister.local
 SDK_DIR   = ../sdk
 ROOT      = $(realpath $(CURDIR)/../..)
 OBJ_DIR   = $(ROOT)/.obj/$(APP)
 BUILD_DIR = $(OBJ_DIR)
 DIST      = $(ROOT)/dist/$(APP)
-OUT       = $(ROOT)/build/$(APP)
+OUT       = $(ROOT)/build/$(TARGET)/$(APP)
 RUNTIME   = $(ROOT)/runtime
 
 SRCS     = $(wildcard *.c)
 SRCS_CXX = $(wildcard *.cpp)
+
+# Data files bundled into the per-target deliverable (override per core).
+MISTER_ASSETS ?= $(wildcard *.mid *.mod *.wav *.dat *.png *.bin *.cfg *.iso)
 
 # Declare default target before sdk.mk's rules
 .DEFAULT_GOAL := all
@@ -169,24 +177,20 @@ $(CRT_DIR)/start.o: $(CRT_DIR)/start.S
 all: $(OBJ_DIR)/app.elf release
 	@$(SIZE) $<
 
+# Assemble the per-target deliverable.  Each platform owns its layout
+# (pocket = APF tree, mister = disk image); the rule names no target —
+# adding a target = add platforms/<target>/image.sh.
 release: $(OBJ_DIR)/app.elf
-	@rm -rf $(OUT)
-	@mkdir -p $(dir $(OUT))
-	@cp -r $(DIST) $(OUT)
-	@cp $(RUNTIME)/bitstream.rbf_r $(RUNTIME)/loader.bin $$(ls -d $(OUT)/Cores/*/)/
-	@mkdir -p $$(ls -d $(OUT)/Assets/*/)/common
-	@cp $(RUNTIME)/os.bin $$(ls -d $(OUT)/Assets/*/)/common/
-	@cp $< $$(ls -d $(OUT)/Assets/*/)/common/$(APP).elf
-	@for f in *.mid *.mod *.wav *.dat *.png; do [ -f "$$f" ] && cp "$$f" $$(ls -d $(OUT)/Assets/*/)/common/; done 2>/dev/null; true
-	@echo "Ready: build/$(APP)/"
-
-COMMON = $(shell ls -d $(OUT)/Assets/*/common 2>/dev/null)
+	@$(SDK_DIR)/platforms/$(TARGET)/image.sh "$(APP)" "$(OBJ_DIR)/app.elf" "$(ROOT)" "$(DIST)" $(MISTER_ASSETS)
 
 debug: all
-	@$(ROOT)/scripts/debug.sh $$(ls -d $(OUT)/Assets/*/common)/$(APP).elf
+	@$(ROOT)/scripts/debug.sh $$(ls -d $(OUT)/Assets/*/common 2>/dev/null)/$(APP).elf
 
+# Deploy to the device.  MISTER_IP rides the environment so the same
+# invocation serves every platform's copy.sh (pocket ignores it and
+# auto-detects the SD card; mister uses it as the network host).
 copy: all
-	@$(SDK_DIR)/platforms/$(TARGET)/copy.sh "$(APP)" "$$(ls -d $(OUT)/Assets/*/common)/$(APP).elf"
+	@MISTER_IP="$(MISTER_IP)" $(SDK_DIR)/platforms/$(TARGET)/copy.sh "$(APP)" "$(OBJ_DIR)/app.elf"
 
 package: all
 	@$(ROOT)/scripts/package.sh $(APP)
@@ -194,7 +198,7 @@ package: all
 test: app_pc
 
 clean: sdk-clean
-	rm -rf $(OUT)
+	rm -rf $(ROOT)/build/pocket/$(APP) $(ROOT)/build/mister/$(APP)
 
 .PHONY: all release debug copy package test clean
 MKEOF
@@ -259,7 +263,7 @@ if [[ "$KIND" == "sdk-app" ]]; then
     echo
     echo "  cd src/apps/$APP_LOWER"
     echo "  make              # build this SDK app"
-    echo "  cd .. && make     # rebuild SDK demo core (build/sdk/)"
+    echo "  cd .. && make     # rebuild SDK demo core (build/pocket/sdk/)"
     echo
     echo "Edit src/apps/$APP_LOWER/main.c to start building your SDK app."
 else

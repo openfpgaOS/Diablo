@@ -8,28 +8,26 @@
  * mididemo — General-MIDI playback via the SoundFont-driven sample synth
  *
  * Canonical example of:
- *   - Loading a SoundFont bank with of_smp_bank_load (or reusing the
- *     kernel's auto-loaded preload buffer when one is exposed via
- *     OF_SVC->smp_bank_preload_base)
- *   - Driving the CPU MIDI voice engine with of_smp_voice_*: note_on,
- *     note_off, channel CC updates (volume, expression, pan, bend),
- *     and the 1 kHz logical envelope tick dispatched by the timer ISR
- *   - of_midi_play() to spool a SMF file through the synth — the
- *     parser runs in main(), but the actual mixer slot ops happen
- *     inside the timer ISR via of_midi_pump (see project memory
- *     `midi_isr_pump`)
- *   - smp_voice_tick_get_stats() for live voice-load diagnostics
+ *   - Standard MIDI File playback with of_midi_init() + of_midi_play():
+ *     the parser runs in main() but the mixer slot ops happen on the
+ *     timer ISR via of_midi_pump (installed by of_midi_play; never call
+ *     it from the main loop — see project memory `midi_isr_pump`).
+ *   - Using the kernel's auto-loaded SoundFont bank: of_smp_bank_get()
+ *     returns the .ofsf the kernel staged at boot (NULL if none), and
+ *     of_smp_zone_lookup() resolves a (bank, program, note) to sample
+ *     zones for direct mixer playback.
+ *   - smp_voice_tick_get_stats() for live synth voice-load diagnostics.
+ *   - Group / master volume via of_mixer_set_group_volume / set_master_volume.
  *
- * Modes:
- *   Default          play the MIDI file at slot:4
- *   D-pad UP toggle  diagnostic instrument loop — sustained notes for
- *                    every program so you can audit each preset
+ * Three modes, cycled with SELECT:
+ *   PLAY   play music.mid (START=pause/resume, A=restart)
+ *   DIAG   one sustained note per GM program so you can audit each preset
+ *          (LEFT/RIGHT=prev/next, START=toggle auto-advance, A=replay)
+ *   RAW    play a bank zone straight on a mixer voice — direct sample
+ *          playback, no synth (LEFT/RIGHT=prev/next, START=toggle
+ *          bank/copy source, X/Y=octave down/up)
  *
- * Controls:
- *   START      play / pause
- *   SELECT     restart
- *   D-pad UP   diagnostic mode toggle
- *   L1 / R1    master volume down / up
+ * Controls (all modes): SELECT=next mode   L1/R1=master volume down/up
  */
 
 #include "of.h"
@@ -274,6 +272,13 @@ int main(void) {
 
     build_all_diag();
 
+    /* The sample-based MIDI synth needs both the mixer (its output backend)
+     * and the MIDI feature — gate on both caps bits before touching them. */
+    if (!of_has_feature(OF_HW_MIXER) || !of_has_feature(OF_HW_MIDI)) {
+        printf(" Audio/MIDI HW not available (OF_HW_MIXER/OF_HW_MIDI clear)\n");
+        for (;;) usleep(100 * 1000);
+    }
+
     /* Initialize mixer — required by the sample-based MIDI backend */
     of_mixer_init(OF_MIXER_MAX_VOICES, OF_MIXER_OUTPUT_RATE);
     of_mixer_set_master_volume(255);
@@ -284,9 +289,12 @@ int main(void) {
      * is needed. If no .ofsf was staged, of_smp_bank_get() returns NULL. */
     const ofsf_header_t *bhdr = of_smp_bank_get();
     if (!bhdr) {
+        /* No bank staged → the synth can't make sound.  Park gently (don't
+         * busy-spin) so the launcher stays responsive and the message is
+         * readable over UART / on the terminal. */
         printf(" No SoundFont found!\n");
-        printf(" Place a .ofsf in a data slot\n");
-        while (1) {}
+        printf(" Place a .ofsf in a data slot (the Sound Bank slot)\n");
+        for (;;) usleep(100 * 1000);
     }
     printf(" Bank loaded (%.1f KB)\n",
            bhdr->sample_data_size / 1024.0f);

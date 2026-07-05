@@ -590,14 +590,27 @@ static uint32_t build_many_tracks_midi(uint8_t *out) {
 
 static uint8_t midi_buf[2048];
 
-/* Helper: play and pump for the given duration in ms */
+/* Wait `ms` while a MIDI plays.  of_midi_play() installs of_midi_pump() as
+ * the 50 Hz machine-timer ISR (of_midi.h), so on hardware we just spin with
+ * interrupts enabled and let the ISR advance playback — calling of_midi_pump()
+ * here too would race it (that race is what made the old MD.20+ tests stall).
+ * We poll of_time_ms() rather than wfi so the wait still makes progress if the
+ * engine stops the timer when a non-looping track ends.  The desktop (OF_PC)
+ * build has no timer ISR, so there we pump by hand. */
+static void midi_wait_ms(uint32_t ms) {
+    uint32_t start = of_time_ms();
+    while ((uint32_t)(of_time_ms() - start) < ms) {
+#ifdef OF_PC
+        of_midi_pump();
+        usleep(2 * 1000);
+#endif
+    }
+}
+
+/* Helper: play and let the ISR pump for the given duration in ms. */
 static void play_and_pump(uint32_t len, int loop, int pump_ms) {
     of_midi_play(midi_buf, len, loop);
-    int iters = pump_ms / 10;
-    for (int i = 0; i < iters; i++) {
-        of_midi_pump();
-        usleep(10 * 1000);
-    }
+    midi_wait_ms((uint32_t)pump_ms);
 }
 
 void test_midi(void) {
@@ -628,10 +641,7 @@ void test_midi(void) {
     /* MD.06: pump advances state — call pump for ~200ms (enough for the
      * 1-quarter-note (~125ms) playback to complete) */
     {
-        for (int i = 0; i < 25; i++) {
-            of_midi_pump();
-            usleep(10 * 1000);
-        }
+        midi_wait_ms(250);
         /* After ~250ms with non-looping playback, should have finished */
         ASSERT("MD.06 ended", !of_midi_playing());
     }
@@ -641,10 +651,7 @@ void test_midi(void) {
         uint32_t len = build_long_midi(midi_buf);
         rc = of_midi_play(midi_buf, len, 0);
         ASSERT("MD.07a play", rc == OF_MIDI_OK);
-        for (int i = 0; i < 5; i++) {
-            of_midi_pump();
-            usleep(10 * 1000);
-        }
+        midi_wait_ms(50);
         ASSERT("MD.07b on", of_midi_playing());
         of_midi_stop();
         ASSERT("MD.07c off", !of_midi_playing());
@@ -654,14 +661,14 @@ void test_midi(void) {
     {
         uint32_t len = build_long_midi(midi_buf);
         of_midi_play(midi_buf, len, 0);
-        for (int i = 0; i < 3; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(30);
 
         of_midi_pause();
         ASSERT("MD.08a paused", of_midi_paused());
         ASSERT("MD.08b on", of_midi_playing());
 
         /* Pump while paused — should not advance */
-        for (int i = 0; i < 5; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(50);
         ASSERT("MD.08c stayP", of_midi_paused() && of_midi_playing());
 
         of_midi_resume();
@@ -677,10 +684,7 @@ void test_midi(void) {
         ASSERT("MD.09a play", rc == OF_MIDI_OK);
 
         /* Pump for 500ms — way past one playthrough */
-        for (int i = 0; i < 50; i++) {
-            of_midi_pump();
-            usleep(10 * 1000);
-        }
+        midi_wait_ms(500);
         /* Should still be playing because of loop */
         ASSERT("MD.09b loop", of_midi_playing());
         of_midi_stop();
@@ -691,7 +695,7 @@ void test_midi(void) {
         uint32_t len = build_fmt1_midi(midi_buf);
         rc = of_midi_play(midi_buf, len, 0);
         ASSERT("MD.10a fmt1", rc == OF_MIDI_OK);
-        for (int i = 0; i < 30; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(300);
         ASSERT("MD.10b ended", !of_midi_playing());
     }
 
@@ -711,7 +715,7 @@ void test_midi(void) {
                 test_fail("MD.13 cycle", "play failed");
                 goto md13_done;
             }
-            for (int i = 0; i < 5; i++) { of_midi_pump(); usleep(5 * 1000); }
+            midi_wait_ms(25);
             of_midi_stop();
             if (of_midi_playing()) {
                 test_fail("MD.13 cycle", "still on");
@@ -728,7 +732,7 @@ md13_done:;
         of_midi_play(midi_buf, len, 1);
         for (int v = 255; v >= 0; v -= 64) {
             of_midi_set_volume(v);
-            for (int i = 0; i < 3; i++) { of_midi_pump(); usleep(10 * 1000); }
+            midi_wait_ms(30);
             ASSERT("MD.14 vol live", of_midi_get_volume() == v);
         }
         of_midi_set_volume(255);
@@ -741,7 +745,7 @@ md13_done:;
         uint32_t len = build_running_status_midi(midi_buf);
         rc = of_midi_play(midi_buf, len, 0);
         ASSERT("MD.17a play", rc == OF_MIDI_OK);
-        for (int i = 0; i < 30; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(300);
         ASSERT("MD.17b ended", !of_midi_playing());
     }
 
@@ -750,7 +754,7 @@ md13_done:;
         uint32_t len = build_cc_midi(midi_buf);
         rc = of_midi_play(midi_buf, len, 0);
         ASSERT("MD.18a play", rc == OF_MIDI_OK);
-        for (int i = 0; i < 30; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(300);
         ASSERT("MD.18b ended", !of_midi_playing());
     }
 
@@ -761,7 +765,7 @@ md13_done:;
         uint32_t len = build_pitchbend_midi(midi_buf);
         rc = of_midi_play(midi_buf, len, 0);
         ASSERT("MD.19a play", rc == OF_MIDI_OK);
-        for (int i = 0; i < 50; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(500);
         ASSERT("MD.19b ended", !of_midi_playing());
     }
 
@@ -770,7 +774,7 @@ md13_done:;
         uint32_t len = build_16ch_midi(midi_buf);
         rc = of_midi_play(midi_buf, len, 0);
         ASSERT("MD.20a play", rc == OF_MIDI_OK);
-        for (int i = 0; i < 60; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(600);
         ASSERT("MD.20b ended", !of_midi_playing());
     }
 
@@ -779,7 +783,7 @@ md13_done:;
         uint32_t len = build_chord_midi(midi_buf);
         rc = of_midi_play(midi_buf, len, 0);
         ASSERT("MD.21a play", rc == OF_MIDI_OK);
-        for (int i = 0; i < 50; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(500);
         ASSERT("MD.21b ended", !of_midi_playing());
     }
 
@@ -788,7 +792,7 @@ md13_done:;
         uint32_t len = build_tempo_change_midi(midi_buf);
         rc = of_midi_play(midi_buf, len, 0);
         ASSERT("MD.22a play", rc == OF_MIDI_OK);
-        for (int i = 0; i < 80; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(800);
         ASSERT("MD.22b ended", !of_midi_playing());
     }
 
@@ -797,7 +801,7 @@ md13_done:;
         uint32_t len = build_long_delta_midi(midi_buf);
         rc = of_midi_play(midi_buf, len, 0);
         ASSERT("MD.23a play", rc == OF_MIDI_OK);
-        for (int i = 0; i < 250; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(2500);
         ASSERT("MD.23b ended", !of_midi_playing());
     }
 
@@ -806,7 +810,7 @@ md13_done:;
         uint32_t len = build_meta_midi(midi_buf);
         rc = of_midi_play(midi_buf, len, 0);
         ASSERT("MD.24a play", rc == OF_MIDI_OK);
-        for (int i = 0; i < 30; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(300);
         ASSERT("MD.24b ended", !of_midi_playing());
     }
 
@@ -815,7 +819,7 @@ md13_done:;
         uint32_t len = build_sustain_midi(midi_buf);
         rc = of_midi_play(midi_buf, len, 0);
         ASSERT("MD.25a play", rc == OF_MIDI_OK);
-        for (int i = 0; i < 50; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(500);
         ASSERT("MD.25b ended", !of_midi_playing());
     }
 
@@ -824,7 +828,7 @@ md13_done:;
         uint32_t len = build_sysex_midi(midi_buf);
         rc = of_midi_play(midi_buf, len, 0);
         ASSERT("MD.26a play", rc == OF_MIDI_OK);
-        for (int i = 0; i < 30; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(300);
         ASSERT("MD.26b ended", !of_midi_playing());
     }
 
@@ -834,7 +838,7 @@ md13_done:;
         rc = of_midi_play(midi_buf, len, 0);
         ASSERT("MD.27a play", rc == OF_MIDI_OK);
         /* 128 notes × ~3 ticks each at very fast tempo */
-        for (int i = 0; i < 200; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(2000);
         ASSERT("MD.27b ended", !of_midi_playing());
     }
 
@@ -843,7 +847,7 @@ md13_done:;
         uint32_t len = build_drums_midi(midi_buf);
         rc = of_midi_play(midi_buf, len, 0);
         ASSERT("MD.28a play", rc == OF_MIDI_OK);
-        for (int i = 0; i < 100; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(1000);
         ASSERT("MD.28b ended", !of_midi_playing());
     }
 
@@ -852,7 +856,7 @@ md13_done:;
         uint32_t len = build_many_tracks_midi(midi_buf);
         rc = of_midi_play(midi_buf, len, 0);
         ASSERT("MD.29a play", rc == OF_MIDI_OK);
-        for (int i = 0; i < 50; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(500);
         ASSERT("MD.29b ended", !of_midi_playing());
     }
 
@@ -871,10 +875,7 @@ md13_done:;
     {
         uint32_t len = build_long_midi(midi_buf);
         of_midi_play(midi_buf, len, 0);
-        for (int i = 0; i < 1000; i++) {
-            of_midi_pump();
-            usleep(1 * 1000);
-        }
+        midi_wait_ms(1000);
         ASSERT("MD.31 fast", !of_midi_playing());
     }
 
@@ -886,7 +887,7 @@ md13_done:;
         };
         rc = of_midi_play(tiny, sizeof(tiny), 0);
         ASSERT("MD.33a empty", rc == OF_MIDI_OK);
-        for (int i = 0; i < 5; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(50);
         ASSERT("MD.33b ended", !of_midi_playing());
     }
 
@@ -900,20 +901,22 @@ md13_done:;
         rc = of_midi_play(bad, sizeof(bad), 0);
         /* Either rejected up front, or pumps to a graceful end */
         if (rc == OF_MIDI_OK) {
-            for (int i = 0; i < 30; i++) { of_midi_pump(); usleep(10 * 1000); }
+            midi_wait_ms(300);
             of_midi_stop();
         }
         test_pass("MD.34 trunc");
     }
 
-    /* MD.37: play while already playing — auto-restarts (no error). */
+    /* MD.37: play while already playing — the engine rejects the second
+     * play with an error (you must of_midi_stop() first); the original
+     * keeps going. */
     {
         uint32_t len = build_long_midi(midi_buf);
         rc = of_midi_play(midi_buf, len, 1);
         ASSERT("MD.37a play", rc == OF_MIDI_OK);
-        for (int i = 0; i < 3; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(30);
         int rc2 = of_midi_play(midi_buf, len, 0);
-        ASSERT("MD.37b restart", rc2 == OF_MIDI_OK);
+        ASSERT("MD.37b busy", rc2 != OF_MIDI_OK);
         ASSERT("MD.37c playing", of_midi_playing());
         of_midi_stop();
     }
@@ -926,7 +929,7 @@ md13_done:;
         uint32_t len = build_simple_midi(midi_buf, 0);
         rc = of_midi_play(midi_buf, len, 0);
         ASSERT("MD.39b play", rc == OF_MIDI_OK);
-        for (int i = 0; i < 25; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(250);
         ASSERT("MD.39c ended", !of_midi_playing());
     }
 
@@ -940,7 +943,7 @@ md13_done:;
         ASSERT("MD.40a play", rc == OF_MIDI_OK);
         /* Total duration: ~250ms guitar + ~500ms bass + ~250ms snare
          * + ~125ms ensemble + tempo overhead ≈ 1500ms. Pump for 2s. */
-        for (int i = 0; i < 200; i++) { of_midi_pump(); usleep(10 * 1000); }
+        midi_wait_ms(2000);
         ASSERT("MD.40b ended", !of_midi_playing());
     }
 
@@ -1049,11 +1052,10 @@ void test_midi_smp(void) {
         rc = of_midi_play(midi_buf, len, 0);
         ASSERT("SB.08b play", rc == OF_MIDI_OK);
 
-        /* Pump for 200ms — notes should start and activate mixer voices */
-        for (int i = 0; i < 20; i++) {
-            of_midi_pump();
-            usleep(10 * 1000);
-        }
+        /* Check while the note is still sounding.  The simple MIDI is
+         * ~125 ms, so a 200 ms wait would let it end and release the voice
+         * before we look. */
+        midi_wait_ms(50);
 
         /* Check if any mixer voice is active (at least one note should be playing) */
         int any_active = 0;
@@ -1073,10 +1075,7 @@ void test_midi_smp(void) {
         int rc = of_midi_play(midi_buf, len, 0);
         ASSERT("SB.09a play", rc == OF_MIDI_OK);
 
-        for (int i = 0; i < 20; i++) {
-            of_midi_pump();
-            usleep(10 * 1000);
-        }
+        midi_wait_ms(50);   /* check while notes are still sounding (see SB.08) */
 
         int active_count = 0;
         for (int v = 0; v < 48; v++) {

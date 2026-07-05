@@ -12,9 +12,11 @@
  *     of_mixer_play (note-on) + of_mixer_retrigger (subsequent notes).
  *     Stop+play would let the allocator re-pick the slot and channels
  *     would steal each other — see project memory `mod_voice_pinning`.
- *   - Uploading 8-bit signed samples to the SDRAM sample pool with
- *     of_mixer_alloc_samples (the kernel handles the cache flush so
- *     the HW mixer's AXI master sees committed bytes)
+ *   - Uploading the 8-bit MOD samples to the SDRAM mixer sample pool via
+ *     of_mixer_alloc_samples (converting to 16-bit on the way in). The HW
+ *     mixer's voice-fetch master reads this pool directly and the OS keeps
+ *     it coherent — this is the pattern the SDK's own mixer tests use, and
+ *     what the mixer reliably plays from on this platform.
  *   - Per-voice rate updates with of_mixer_set_rate_raw (Q16.16) on
  *     the tracker's tick boundary — no per-sample CPU mixing
  *
@@ -236,7 +238,7 @@ static int parse_mod(mod_file_t *m, const uint8_t *data, uint32_t len) {
             continue;
         }
 
-        /* Allocate 2 bytes per sample (16-bit) */
+        /* Allocate 2 bytes per sample (16-bit) in the mixer sample pool. */
         int16_t *cram = (int16_t *)of_mixer_alloc_samples(slen * 2);
         if (!cram) {
             printf("sample pool full at sample %d\n", i + 1);
@@ -811,6 +813,12 @@ static void run_effect_test(int idx) {
 int main(void) {
     /* Audio-only app — stay in terminal mode for status output */
     printf("=== MOD Player Demo ===\n\n");
+
+    /* A tracker is nothing without the mixer — gate on the caps bit. */
+    if (!of_has_feature(OF_HW_MIXER)) {
+        printf("No mixer on this platform (OF_HW_MIXER clear).\n");
+        for (;;) usleep(100 * 1000);
+    }
 
     /* Initialize mixer */
     of_mixer_init(32, OF_MIXER_OUTPUT_RATE);

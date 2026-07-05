@@ -22,7 +22,7 @@ APP="$1"
 ELF="$2"
 SDCARD="$3"
 SDK_ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
-BUILD_DIR="$SDK_ROOT/build/$APP"
+BUILD_DIR="$SDK_ROOT/build/pocket/$APP"
 
 GREEN='\033[92m'
 RED='\033[91m'
@@ -37,12 +37,12 @@ source "$SDK_ROOT/scripts/sdcard.sh"
 
 # ── Copy build/<app>/ to SD card ────────────────────────────────────
 if [[ -d "$BUILD_DIR/Cores" ]]; then
-    echo "Deploying build/$APP/ to $SDCARD"
+    echo "Deploying build/pocket/$APP/ to $SDCARD"
     cp -r "$BUILD_DIR"/Cores/* "$SDCARD/Cores/" 2>/dev/null && ok "Cores"
     cp -r "$BUILD_DIR"/Assets/* "$SDCARD/Assets/" 2>/dev/null && ok "Assets"
     cp -r "$BUILD_DIR"/Platforms/* "$SDCARD/Platforms/" 2>/dev/null && ok "Platforms"
 else
-    fail "build/$APP/ not found or incomplete. Run 'make' first."
+    fail "build/pocket/$APP/ not found or incomplete. Run 'make' first."
 fi
 
 sync 2>/dev/null || true

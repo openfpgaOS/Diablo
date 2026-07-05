@@ -15,6 +15,19 @@
 #include "utils/log.hpp"
 #include "utils/str_cat.hpp"
 
+#ifdef OPENFPGAOS
+#ifndef OF_NV_SLOT_CAPACITY
+// [of] Capacity of one openfpgaOS nonvolatile save slot. The Pocket maps each
+// save to a fixed 256 KB CRAM0 window laid out contiguously (0x40000 stride
+// from 0x20100000; see the core's data.json and the firmware nvslot map). This
+// value is a firmware + bitstream contract (OF_TARGET_SAVE_MAX_SLOTS /
+// NV_SLOT_BYTES) -- changing it here alone does nothing; the slot size can only
+// be grown by changing data.json, the OS nvslot map, and the CRAM window in
+// lockstep. Used only as an overflow backstop below.
+#define OF_NV_SLOT_CAPACITY 0x40000u
+#endif
+#endif
+
 namespace devilution {
 
 namespace {
@@ -404,6 +417,23 @@ bool MpqWriter::WriteFileContents(const char *filename, const byte *fileData, si
 	block->packedSize = fileSize + offsetTableByteSize;
 	block->unpackedSize = fileSize;
 	block->flags = MpqBlockEntry::FlagExists | MpqBlockEntry::CompressPkZip;
+
+#ifdef OPENFPGAOS
+	// [of] Overflow backstop for the fixed-capacity CRAM save slot. Slots sit
+	// contiguously in CRAM0, so a write past this window would land in the
+	// neighbouring slot -> core crash + corruption of the adjacent save (the
+	// original "second save crashes and takes the save file with it" report).
+	// Plaintext saves are now PkWare-compressed (see codec.cpp), so a real save
+	// is ~110 KB and this should never fire; if it does, abort the save cleanly
+	// instead of scribbling outside the window. `packedSize` is the pre-compression
+	// upper bound, so the check is conservative.
+	if (block->offset + block->packedSize > OF_NV_SLOT_CAPACITY || size_ > OF_NV_SLOT_CAPACITY) {
+		LogError("MpqWriter: save '{}' would exceed the {} KB save slot ({} + {} bytes); aborting to protect the adjacent slot",
+		    name_, OF_NV_SLOT_CAPACITY / 1024, static_cast<unsigned>(block->offset), static_cast<unsigned>(block->packedSize));
+		valid_ = false;
+		return false;
+	}
+#endif
 
 	// We populate the table of sector offsets while we write the data.
 	// We can't pre-populate it because we don't know the compressed sector sizes yet.

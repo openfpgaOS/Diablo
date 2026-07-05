@@ -212,3 +212,25 @@ app_pc: $(SRCS) $(SRCS_CXX) $(SDK_DIR)/pc/of_sdl2.c $(OF_INIT_SRC) $(SDK_DIR)/in
 sdk-clean:
 	rm -f $(APP_OBJS) $(OF_INIT_OBJ) $(OF_SDL2_OBJ) $(BUILD_DIR)/app.elf app_pc
 	@if [ "$(OBJ_DIR)" != "." ] && [ -d "$(OBJ_DIR)" ]; then rm -rf "$(OBJ_DIR)"; fi
+
+# ── Containerized build (no host RISC-V toolchain needed) ────────────
+# `make build` uses the host riscv64-unknown-elf toolchain — works when
+# it's installed.  For a portable build that works on any host with Docker,
+# prefix any target with `container-` and the SDK container wrapper runs
+# `make <target>` inside the openfpgaos-firmware image (toolchain + musl
+# pre-installed).  One container startup per make invocation amortizes
+# across the whole build.
+#
+# Examples:
+#     make container-build      → runs `make build` in the container
+#     make container-app.elf    → runs `make app.elf` in the container
+#     make container-sdk-clean  → cleans inside the container
+#
+# Downstream cores reusing this SDK get the same flow for free — both
+# sdk-container.sh and Dockerfile.firmware are mirrored into the SDK repo
+# at <sdk-repo>/tools/ by openfpgaCore's `make sdk DEST=...` step (so
+# the wrapper sits above src/sdk/, not inside it).  See docs/SDK_PORTING.md.
+SDK_CONTAINER ?= $(abspath $(SDK_DIR)/../../tools/sdk-container.sh)
+container-%:
+	@bash $(SDK_CONTAINER) make -f $(firstword $(MAKEFILE_LIST)) $*
+.PHONY: container-%

@@ -90,6 +90,12 @@ extern "C" {
 /* -- OF_EID_BASE -- */
 enum of_base_fid {
     OF_BASE_FID_GET_VERSION = 0,
+    OF_BASE_FID_RELAUNCH    = 1,  /* (instance, elf): swap to another app in-OS;
+                                   * does NOT return on success.  MiSTer only. */
+    OF_BASE_FID_SET_MENU    = 2,  /* (instance, elf): register the launcher to
+                                   * re-enter when an app exit()s. */
+    OF_BASE_FID_LIST_INSTANCES = 3, /* (names, stride, max): enumerate game
+                                   * instances under /games; returns count. */
 };
 
 /* -- OF_EID_VIDEO -- */
@@ -130,6 +136,7 @@ enum of_input_fid {
     OF_INPUT_FID_POLL_P0      = 3,
     OF_INPUT_FID_GET_KEYBOARD_STATE = 4,
     OF_INPUT_FID_READ_MOUSE_STATE   = 5,
+    OF_INPUT_FID_IS_DOCKED          = 6,
 };
 
 /* -- OF_EID_ANALOGIZER -- */

@@ -204,15 +204,25 @@ fi
 
 # ── Check runtime files ─────────────────────────────────────────────
 SDK_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-RUNTIME="$SDK_ROOT/runtime"
+RUNTIME="$SDK_ROOT/runtime/pocket"
 
 echo
 MISSING=0
-for f in bitstream.rbf_r os.bin loader.bin; do
+# Bitstream(s) are variant-named (os25.rbf_r / os30.rbf_r); at least one
+# must be present.  A core picks its variant by name in core.json.
+if compgen -G "$RUNTIME"/*.rbf_r >/dev/null 2>&1; then
+    for f in "$RUNTIME"/*.rbf_r; do
+        ok "$(basename "$f") ($(wc -c < "$f" | tr -d ' ') bytes)"
+    done
+else
+    fail "no *.rbf_r bitstream in runtime/pocket/"
+    MISSING=1
+fi
+for f in os.bin loader.bin; do
     if [[ -f "$RUNTIME/$f" ]]; then
         ok "$f ($(wc -c < "$RUNTIME/$f" | tr -d ' ') bytes)"
     else
-        fail "$f not found in runtime/"
+        fail "$f not found in runtime/pocket/"
         MISSING=1
     fi
 done

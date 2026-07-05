@@ -4,105 +4,51 @@
 # SPDX-FileType: SOURCE
 # SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
 #------------------------------------------------------------------------------
-
 #
-# openfpgaOS SDK — Release Packager
+# openfpgaOS SDK — Release Packager (generic dispatcher)
 #
-# Packages custom game cores and/or the SDK release into distributable ZIPs.
-# Auto-detects custom cores in build/ (created by customize.sh + make).
+# Zips built cores/apps under build/<target>/ into release ZIPs under
+# releases/<target>/.  The per-target zip layout lives entirely in
+# src/sdk/platforms/<target>/package.sh, so this dispatcher names no
+# target — adding a target = add a platforms/<target>/ directory.
 #
 # Usage:
-#   ./scripts/package.sh                    Package SDK + all custom cores found
-#   ./scripts/package.sh <ShortName>        Package only a specific custom core
+#   TARGET=<target> ./scripts/package.sh             Package everything built for <target>
+#   TARGET=<target> ./scripts/package.sh <Name>      Package only build/<target>/<Name>
 #
-
 set -e
-
-GREEN='\033[92m'
-CYAN='\033[96m'
-RESET='\033[0m'
 
 SDK_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SPECIFIC="$1"
+TARGET="${TARGET:-pocket}"
 
-mkdir -p "$SDK_DIR/releases"
-
-package_core() {
-    local INPUT="$1"
-    local LABEL="$2"
-
-    [ ! -d "$INPUT/Cores" ] && return
-
-    # Detect core name
-    local CORE_NAME=$(ls "$INPUT/Cores/" 2>/dev/null | head -1)
-    [ -z "$CORE_NAME" ] && return
-
-    # Read metadata
-    local GAME_NAME=$(python3 -c "
-import json
-with open('$INPUT/Cores/$CORE_NAME/core.json') as f:
-    d = json.load(f)
-print(d['core']['metadata']['description'])
-" 2>/dev/null || echo "$LABEL")
-
-    local GAME_VERSION=$(python3 -c "
-import json
-with open('$INPUT/Cores/$CORE_NAME/core.json') as f:
-    d = json.load(f)
-print(d['core']['metadata']['version'])
-" 2>/dev/null || echo "1.0.0")
-
-    local OUTPUT="$SDK_DIR/releases/${LABEL}-v${GAME_VERSION}.zip"
-
-    # Generate INSTALL.txt
-    cat > "$INPUT/INSTALL.txt" << EOF
-$GAME_NAME
-$(printf '=%.0s' $(seq 1 ${#GAME_NAME}))
-
-Version: $GAME_VERSION
-
-Installation:
-1. Extract this ZIP to your Analogue Pocket SD card root
-2. Merge with existing folders if prompted
-3. The game will appear in the Pocket menu
-
-Settings and save files are created automatically in Saves/<platform>/
-common/; they persist when you exit the core through the Pocket menu.
-EOF
-
-    # Create ZIP
-    cd "$INPUT"
-    rm -f "$OUTPUT" 2>/dev/null || true
-    EXTRA_DIRS=""
-    [ -d Saves ] && EXTRA_DIRS="Saves/"
-    zip -r "$OUTPUT" \
-        Cores/ Assets/ Platforms/ $EXTRA_DIRS INSTALL.txt \
-        -x "*.DS_Store" "Thumbs.db" 2>/dev/null
-    cd "$SDK_DIR"
-
-    echo -e "${GREEN}Package created: $OUTPUT${RESET}"
-    echo "  Size: $(du -h "$OUTPUT" | cut -f1)"
+PLAT="$SDK_DIR/src/sdk/platforms/$TARGET"
+[ -f "$PLAT/package.sh" ] || {
+    echo "No packager for target '$TARGET' (expected $PLAT/package.sh)."
+    echo "Available targets: $(ls "$SDK_DIR/src/sdk/platforms" 2>/dev/null | tr '\n' ' ')"
+    exit 1
 }
 
+REL="$SDK_DIR/releases/$TARGET"
+BUILD="$SDK_DIR/build/$TARGET"
+mkdir -p "$REL"
+
+pkg() { bash "$PLAT/package.sh" "$1" "$2" "$REL"; }
+
 if [ -n "$SPECIFIC" ]; then
-    # Package a specific core
-    if [ -d "$SDK_DIR/build/$SPECIFIC" ]; then
-        package_core "$SDK_DIR/build/$SPECIFIC" "$SPECIFIC"
-    else
-        echo "Error: build/$SPECIFIC/ not found. Run 'make' first."
+    [ -d "$BUILD/$SPECIFIC" ] || {
+        echo "Error: build/$TARGET/$SPECIFIC/ not found. Build it first (make build CORE=$SPECIFIC TARGET=$TARGET)."
+        exit 1
+    }
+    pkg "$BUILD/$SPECIFIC" "$SPECIFIC"
+else
+    if [ ! -d "$BUILD" ] || [ -z "$(ls -A "$BUILD" 2>/dev/null)" ]; then
+        echo "No $TARGET builds found in build/$TARGET/."
+        echo "Build first, e.g.: make build TARGET=$TARGET"
         exit 1
     fi
-else
-    # Package SDK if present
-    if [ -d "$SDK_DIR/build/sdk/Cores" ]; then
-        package_core "$SDK_DIR/build/sdk" "openfpgaOS-SDK"
-    fi
-
-    # Package all custom cores
-    for coredir in "$SDK_DIR/build"/*/; do
-        name=$(basename "$coredir")
-        [ "$name" = "sdk" ] && continue
-        [ ! -d "$coredir/Cores" ] && continue
-        package_core "$coredir" "$name"
+    for d in "$BUILD"/*/; do
+        [ -d "$d" ] || continue
+        pkg "$d" "$(basename "$d")"
     done
 fi

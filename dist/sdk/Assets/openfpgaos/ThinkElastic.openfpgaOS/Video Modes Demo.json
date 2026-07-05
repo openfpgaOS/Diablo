@@ -12,15 +12,11 @@
             },
             {
                 "id": 2,
-                "filename": "analogcfg.ini"
+                "filename": "modesdemo.ini"
             },
             {
                 "id": 3,
-                "filename": "analogcfg.elf"
-            },
-            {
-                "id": 8,
-                "filename": "analogizer.cfg"
+                "filename": "modesdemo.elf"
             }
         ]
     }

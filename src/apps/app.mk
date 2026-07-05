@@ -8,7 +8,7 @@
 #
 # Included by each src/apps/<name>/Makefile. Drives the SDK app build
 # path: intermediate objects under .obj/sdk/<name>/, final ELF picked
-# up by src/apps/Makefile's release step and dropped into build/sdk/.
+# up by src/apps/Makefile's release step and dropped into build/pocket/sdk/.
 #
 # For the custom-core path (a standalone openFPGA core wrapping a
 # single app under src/<name>/) see scripts/customize.sh and the

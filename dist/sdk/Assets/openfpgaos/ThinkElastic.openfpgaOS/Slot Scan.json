@@ -1,0 +1,35 @@
+{
+    "instance": {
+        "magic": "APF_VER_1",
+        "variant_select": {
+            "id": 666,
+            "select": false
+        },
+        "data_slots": [
+            {
+                "id": 1,
+                "filename": "os.bin"
+            },
+            {
+                "id": 2,
+                "filename": "slotscan.ini"
+            },
+            {
+                "id": 3,
+                "filename": "slotscan.elf"
+            },
+            {
+                "id": 20,
+                "filename": "s20.bin"
+            },
+            {
+                "id": 24,
+                "filename": "s24.bin"
+            },
+            {
+                "id": 28,
+                "filename": "s28.bin"
+            }
+        ]
+    }
+}

@@ -115,6 +115,30 @@
                 ]
             },
             {
+                "name": "Analogizer 15kHz Timing",
+                "id": 61,
+                "type": "list",
+                "enabled": true,
+                "persist": true,
+                "address": "0xF7000000",
+                "defaultval": 0,
+                "mask": "0xFFF3FFFF",
+                "options": [
+                    {
+                        "value": "0x00000000",
+                        "name": "240p"
+                    },
+                    {
+                        "value": "0x00040000",
+                        "name": "480i NTSC"
+                    },
+                    {
+                        "value": "0x00080000",
+                        "name": "576i PAL"
+                    }
+                ]
+            },
+            {
                 "name": "Pocket LCD",
                 "id": 70,
                 "type": "list",
@@ -169,66 +193,6 @@
                     "adjust_small": 1,
                     "adjust_large": 4
                 }
-            },
-            {
-                "name": "App Option 1",
-                "id": 100,
-                "type": "list",
-                "enabled": true,
-                "persist": true,
-                "address": "0x03FE0000",
-                "defaultval": 0,
-                "mask": "0xFFFFFFFF",
-                "options": [
-                    {
-                        "value": "0x00",
-                        "name": "Off"
-                    },
-                    {
-                        "value": "0x01",
-                        "name": "On"
-                    }
-                ]
-            },
-            {
-                "name": "App Option 2",
-                "id": 101,
-                "type": "slider_u32",
-                "enabled": true,
-                "persist": true,
-                "address": "0x03FE0004",
-                "defaultval": 5,
-                "graphical": {
-                    "signed": false,
-                    "min": 0,
-                    "max": 10,
-                    "adjust_small": 1,
-                    "adjust_large": 2
-                }
-            },
-            {
-                "name": "App Option 3",
-                "id": 102,
-                "type": "list",
-                "enabled": true,
-                "persist": true,
-                "address": "0x03FE0008",
-                "defaultval": 0,
-                "mask": "0xFFFFFFFF",
-                "options": [
-                    {
-                        "value": "0x00",
-                        "name": "Easy"
-                    },
-                    {
-                        "value": "0x01",
-                        "name": "Normal"
-                    },
-                    {
-                        "value": "0x02",
-                        "name": "Hard"
-                    }
-                ]
             }
         ],
         "messages": []

@@ -1802,6 +1802,18 @@ void PadmapperOptions::ButtonPressed(ControllerButton button)
 	if (action->actionPressed)
 		action->actionPressed();
 	SuppressedButton = action->boundInput.modifier;
+#if defined(OPENFPGAOS)
+	// [of] This action is a chord (modifier + button), so its modifier button was
+	// consumed as a modifier -- cancel any standalone release action still pending
+	// on that modifier from its own earlier press, so releasing the modifier does
+	// not ALSO fire its bare tap binding. Without this, L1 (quick-spell chord
+	// modifier + release-fired UseHealthPotion) quaffs a potion every time it is
+	// released after a chord; likewise R1 + UseManaPotion. Done per-button at
+	// chord time, so it stays correct even with two modifiers held at once (the
+	// single global SuppressedButton cannot). See diablo.cpp UseHealthPotion.
+	if (action->boundInput.modifier != ControllerButton_NONE)
+		buttonToReleaseAction[static_cast<size_t>(action->boundInput.modifier)] = nullptr;
+#endif
 	buttonToReleaseAction[static_cast<size_t>(button)] = action;
 }
 

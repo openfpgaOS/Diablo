@@ -9,8 +9,9 @@
  *
  * Canonical example of:
  *   - Comparing cached vs uncached SDRAM throughput by aliasing the
- *     same physical bytes via 0x10xxxxxx (cached) and 0x50xxxxxx
- *     (uncached) — the diff measures the L1 D-cache + writeback path
+ *     same physical bytes through of_uncached() (the D-cache-bypass
+ *     alias, derived from the caps descriptor — never hardcoded) — the
+ *     diff measures the L1 D-cache + writeback path
  *   - of_time_us-driven microbenchmarks with a `volatile sink` to
  *     stop the compiler eliding the loop
  *
@@ -38,10 +39,6 @@ static uint32_t idx_buf[262144 / 4] __attribute__((aligned(64)));
 
 /* Prevent the compiler from optimizing away the operations */
 static volatile uint8_t sink;
-
-/* Uncached SDRAM mirror — bypass D-cache for raw bus throughput measurement.
- * 0x10xxxxxx cached SDRAM aliases to 0x50xxxxxx uncached SDRAM. */
-#define UNCACHED_SDRAM_OFF  0x40000000
 
 /* Test sizes: 256, 1K, 16K, 256K */
 static const uint32_t sizes[]  = { 256, 1024, 16384, 262144 };
@@ -172,7 +169,10 @@ static void run_sdram(void) {
         fmt_mbps(r[i], 16, sizes[i], bench_seq_write(dst, sizes[i], reps[i]), reps[i]);
     print_row("seq_wr", r, NUM_SIZES);
 
-    void *udst = (void *)((uintptr_t)dst + UNCACHED_SDRAM_OFF);
+    /* Bypass the D-cache by reading/writing the same physical bytes through
+     * their uncached alias. of_uncached() forms it from caps->sdram_base /
+     * sdram_uncached_base, so there are no target addresses compiled in. */
+    void *udst = (void *)of_uncached(dst);
 
     for (int i = 0; i < NUM_SIZES; i++)
         fmt_mbps(r[i], 16, sizes[i], bench_seq_read(udst, sizes[i], reps[i]), reps[i]);

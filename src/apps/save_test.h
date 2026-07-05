@@ -337,6 +337,13 @@ static int initialize_all_vsaves(void) {
 static int save_test_main(void) {
     printf("\033[2J\033[H");
     printf("\033[93m  %s Save Test (step=%d)\033[0m\n\n", APP_NAME, STEP);
+
+    /* Nothing to test without persistent save storage. */
+    if (!of_has_feature(OF_HW_SAVE_SLOTS)) {
+        printf("  No save storage on this platform (OF_HW_SAVE_SLOTS clear)\n");
+        for (;;) usleep(100 * 1000);
+    }
+
     printf("  Save sizes: even=%dB odd=%dB\n",
            (int)VSAVE_SIZE_EVEN, (int)VSAVE_SIZE_ODD);
     int virgin = is_virgin();

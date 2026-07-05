@@ -14,9 +14,11 @@ TP       := $(CURDIR)/3rdparty
 OBJDIR   := $(ROOT)/.obj/$(APP)
 MUSL     := $(SDK)/musl
 DIST     := $(ROOT)/dist/$(APP)
-OUT      := $(ROOT)/build/$(APP)
+TARGET   ?= pocket
+MISTER_IP ?= mister.local
+OUT      := $(ROOT)/build/$(TARGET)/$(APP)
 RUNTIME  := $(ROOT)/runtime
-TARGET   := pocket
+GAME_ASSETS = $(wildcard *.dat *.bin *.cfg)
 
 # ── Toolchain ────────────────────────────────────────────────────────
 CROSS   ?= $(shell which riscv64-unknown-elf-g++ >/dev/null 2>&1 && echo riscv64-unknown-elf- || echo riscv64-elf-)
@@ -180,27 +182,16 @@ all: app.elf release
 # repo: place it in Assets/diablo/common/ on the SD card (or stage it under
 # dist/diablo/Assets/diablo/common/ to have it copied automatically here).
 release: app.elf
-	@rm -rf $(OUT)
-	@mkdir -p $(dir $(OUT))
-	@cp -r $(DIST) $(OUT)
-	@for d in $(OUT)/Cores/*/; do \
-		cp $(RUNTIME)/bitstream.rbf_r $(RUNTIME)/loader.bin "$$d"; \
-	done
-	@for d in $(OUT)/Assets/*/; do \
-		mkdir -p "$$d/common"; \
-		cp $(RUNTIME)/os.bin "$$d/common/"; \
-		$(STRIP) -o "$$d/common/$(APP).elf" app.elf; \
-	done
-	@echo "Ready: build/$(APP)/  (add DIABDAT.mpq + optional Hellfire MPQs to Assets/$(APP)/common on the SD)"
+	@$(SDK)/platforms/$(TARGET)/image.sh "$(APP)" "app.elf" "$(ROOT)" "$(DIST)" $(GAME_ASSETS)
 
-copy: release
-	@$(SDK)/platforms/$(TARGET)/copy.sh "$(APP)" "$$(ls -d $(OUT)/Assets/*/common)/$(APP).elf" "$(POCKETDEV)"
+copy: all
+	@MISTER_IP="$(MISTER_IP)" $(SDK)/platforms/$(TARGET)/copy.sh "$(APP)" "app.elf"
 
 package: release
 	@$(ROOT)/scripts/package.sh $(APP)
 
-debug: app.elf
-	@$(ROOT)/scripts/debug.sh app.elf
+debug: all
+	@$(ROOT)/scripts/debug.sh "$$(ls -d $(OUT)/Assets/*/common 2>/dev/null)/$(APP).elf"
 
 clean:
 	rm -rf $(OBJDIR) app.elf $(OUT)

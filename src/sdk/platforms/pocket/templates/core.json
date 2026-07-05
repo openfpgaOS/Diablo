@@ -18,7 +18,7 @@
             "hardware": { "link_port": true, "cartridge_adapter": 0 }
         },
         "cores": [
-            { "name": "default", "id": 0, "filename": "bitstream.rbf_r", "chip32_vm": "loader.bin" }
+            { "name": "default", "id": 0, "filename": "{{BITSTREAM}}.rbf_r", "chip32_vm": "loader.bin" }
         ]
     }
 }

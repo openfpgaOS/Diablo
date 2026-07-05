@@ -2071,9 +2071,11 @@ void InitPadmapActions()
 	    N_("Use health potions from belt."),
 	    ControllerButton_BUTTON_LEFTSHOULDER,
 #if defined(OPENFPGAOS)
-	    /* Release-fired so L1 doubles as the quick-spell chord modifier:
-	     * the padmapper suppresses the bare action when a chord used the
-	     * button (SuppressedButton), which only works on release. */
+	    /* Release-fired so L1 can double as the quick-spell chord modifier: a
+	     * bare L1 tap quaffs on release, but when L1 was used as a chord
+	     * modifier the padmapper cancels this pending release action (see
+	     * PadmapperOptions::ButtonPressed) so releasing L1 after a chord does
+	     * NOT quaff a potion. */
 	    nullptr,
 	    [] { UseBeltItem(BLT_HEALING); },
 #else
@@ -2087,7 +2089,10 @@ void InitPadmapActions()
 	    N_("Use mana potions from belt."),
 	    ControllerButton_BUTTON_RIGHTSHOULDER,
 #if defined(OPENFPGAOS)
-	    /* Release-fired: R1 doubles as the panel chord modifier. */
+	    /* Release-fired: R1 doubles as the panel/character chord modifier; the
+	     * padmapper cancels this pending release when R1 is used as a chord
+	     * modifier (see PadmapperOptions::ButtonPressed) so releasing R1 after a
+	     * chord does NOT quaff a mana potion. */
 	    nullptr,
 	    [] { UseBeltItem(BLT_MANA); },
 #else

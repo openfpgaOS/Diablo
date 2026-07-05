@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 
 #include "appfat.h"
 #include "sha.h"
@@ -89,7 +90,13 @@ void XorBlock(const uint32_t *shaResult, uint32_t *out)
 
 } // namespace
 
-std::size_t codec_decode(byte *pbSrcDst, std::size_t size, const char *pszPassword)
+// [of] One codec block-transform, shared by both decode attempts. `encrypted`
+// selects the legacy SHA1-keystream-XOR payload (pre-fix saves) vs the new
+// plaintext payload (which the MPQ layer can actually compress). Returns the
+// decoded length, or 0 on signature/checksum failure. Transforms pbSrcDst in
+// place. The SHA1 chain runs over the (byteswapped) plaintext in both modes, so
+// the checksum semantics match codec_encode exactly.
+static std::size_t codec_decode_impl(byte *pbSrcDst, std::size_t size, const char *pszPassword, bool encrypted)
 {
 	uint32_t buf[BlockSize];
 	uint32_t dst[SHA1HashSize];
@@ -103,8 +110,10 @@ std::size_t codec_decode(byte *pbSrcDst, std::size_t size, const char *pszPasswo
 	for (size_t i = 0; i < size; pbSrcDst += BlockSizeBytes, i += BlockSizeBytes) {
 		memcpy(buf, pbSrcDst, BlockSizeBytes);
 		ByteSwapBlock(buf);
-		SHA1Result(context, dst);
-		XorBlock(dst, buf);
+		if (encrypted) {
+			SHA1Result(context, dst);
+			XorBlock(dst, buf);
+		}
 		SHA1Calculate(context, buf);
 		ByteSwapBlock(buf);
 		memcpy(pbSrcDst, buf, BlockSizeBytes);
@@ -112,19 +121,36 @@ std::size_t codec_decode(byte *pbSrcDst, std::size_t size, const char *pszPasswo
 
 	memset(buf, 0, sizeof(buf));
 	const CodecSignature sig = GetCodecSignature(pbSrcDst);
-	if (sig.error > 0) {
+	if (sig.error > 0)
 		return 0;
-	}
 
 	SHA1Result(context, dst);
-	if (sig.checksum != dst[0]) {
-		LogError("Checksum mismatch signature={} vs calculated={}", sig.checksum, dst[0]);
-		memset(dst, 0, sizeof(dst));
+	if (sig.checksum != dst[0])
 		return 0;
-	}
 
 	size += sig.lastChunkSize - BlockSizeBytes;
 	return size;
+}
+
+std::size_t codec_decode(byte *pbSrcDst, std::size_t size, const char *pszPassword)
+{
+	// [of] New saves store plaintext so the MPQ writer's PkWare pass can shrink
+	// them (see codec_encode); pre-fix saves stored SHA1-keystream ciphertext.
+	// Try the new plaintext format first, then fall back to the legacy encrypted
+	// format so existing saves keep loading. Decoding is in place, so snapshot
+	// the input to retry cleanly on the (rare) fallback path.
+	std::unique_ptr<byte[]> original(new byte[size]);
+	memcpy(original.get(), pbSrcDst, size);
+
+	std::size_t decoded = codec_decode_impl(pbSrcDst, size, pszPassword, /*encrypted=*/false);
+	if (decoded != 0)
+		return decoded;
+
+	memcpy(pbSrcDst, original.get(), size);
+	decoded = codec_decode_impl(pbSrcDst, size, pszPassword, /*encrypted=*/true);
+	if (decoded == 0)
+		LogError("Codec: block failed to decode as plaintext or legacy-encrypted save");
+	return decoded;
 }
 
 std::size_t codec_get_encoded_len(std::size_t dwSrcBytes)
@@ -138,7 +164,6 @@ void codec_encode(byte *pbSrcDst, std::size_t size, std::size_t size64, const ch
 {
 	uint32_t buf[BlockSize];
 	uint32_t tmp[SHA1HashSize];
-	uint32_t dst[SHA1HashSize];
 
 	if (size64 != codec_get_encoded_len(size))
 		app_fatal("Invalid encode parameters");
@@ -150,9 +175,16 @@ void codec_encode(byte *pbSrcDst, std::size_t size, std::size_t size64, const ch
 		memset(buf, 0, sizeof(buf));
 		memcpy(buf, pbSrcDst, chunk);
 		ByteSwapBlock(buf);
-		SHA1Result(context, dst);
 		SHA1Calculate(context, buf);
-		XorBlock(dst, buf);
+		// [of] Store the block as plaintext -- no keystream XOR. Encrypting here
+		// produced high-entropy bytes the MPQ writer's PkWare pass could not
+		// compress, bloating a save's MPQ past the fixed 256 KB CRAM save slot
+		// (even a level 1-2 save was ~274 KB) so it overflowed into the adjacent
+		// slot -> core crash + neighbour corruption. The SHA1 chain above still
+		// runs over the byteswapped plaintext, so the integrity checksum is
+		// unchanged and codec_decode validates it identically; only the payload
+		// is now compressible. codec_decode falls back to the legacy encrypted
+		// path for saves written before this change.
 		ByteSwapBlock(buf);
 		memcpy(pbSrcDst, buf, BlockSizeBytes);
 		pbSrcDst += BlockSizeBytes;

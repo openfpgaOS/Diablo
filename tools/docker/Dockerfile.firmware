@@ -1,0 +1,36 @@
+# openfpgaOS — RISC-V firmware (bootloader + os.bin) build container.
+#
+# Mirrors the Quartus and VexiiRiscv containers' role, but for `make bootloader`
+# and `make os`: the riscv64-unknown-elf-gcc invocations in src/firmware/os run
+# in here, so a fresh checkout needs only Docker + internet — no host RISC-V
+# toolchain.  The host's `riscv64-elf-gcc` does not need to ship a C library —
+# many distributions (e.g. Homebrew's riscv64-elf-gcc on macOS) provide the
+# compiler only, which breaks `#include <string.h>` even in -ffreestanding mode.
+# This image carries a newlib-equipped riscv64-unknown-elf toolchain so the
+# build is identical across Linux and macOS hosts.
+#
+# The toolchain is baked in (small, freely redistributable).  No persistent
+# cache mount is needed — riscv64-unknown-elf-gcc has no per-user state to
+# warm up the way sbt does, so the firmware-container.sh wrapper is stateless.
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        gcc-riscv64-unknown-elf \
+        picolibc-riscv64-unknown-elf \
+        make \
+        python3 \
+        curl \
+        bsdmainutils \
+        ca-certificates \
+ && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Ubuntu's gcc-riscv64-unknown-elf ships without a libc in its default search
+# path; picolibc is installed as a sibling package.  The firmware build needs
+# picolibc on the include path (firmware-container.sh exports CPATH for that),
+# but SDK app builds use musl via `-isystem $(MUSL_DIR)/include` with -nostdinc
+# and MUST NOT see picolibc — its types collide with musl's.  So we do NOT set
+# CPATH in the image's global ENV.  Each wrapper script sets it as needed:
+#   - firmware-container.sh:  exports CPATH=/usr/lib/picolibc/... (firmware build)
+#   - sdk-container.sh:       leaves CPATH unset            (SDK app build)

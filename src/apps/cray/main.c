@@ -8,19 +8,22 @@
  * cray — software ray tracer
  *
  * Canonical example of:
- *   - A pure-CPU compute workload running unmodified from an SDK-app
- *     ELF (no GPU, no mixer, no input — just `printf` for output)
- *   - Using <math.h> from musl's libm (sin, cos, sqrt, pow): the SDK
+ *   - A pure-CPU compute workload (no GPU): the whole scene is traced on
+ *     the VexiiRiscv core and drawn straight into the framebuffer, so it
+ *     doubles as a "how fast is the CPU with no HW help" baseline.
+ *   - Using <math.h> from musl's libm (sinf, cosf, sqrt, powf): the SDK
  *     bundles enough of musl that ported third-party code "just works"
- *     so long as it doesn't touch threads, locales, dynamic linking
- *     or filesystem paths beyond the slot:N convention
+ *     so long as it doesn't touch threads, locales, dynamic linking or
+ *     filesystem paths beyond the slot:N convention.
+ *   - Progressive refinement into an RGB565 surface (of_video_set_color_mode
+ *     + of_video_surface16 + of_video_flip): each pass halves the pixel
+ *     block size so an image appears immediately and sharpens over time.
  *
- * Source is John Tsiombikas's c-ray-1.1 with minimal openfpgaOS glue.
- * The renderer reads a scene from slot:4 (or built-in default) and
- * writes a PPM to UART, which a host capture script can save.  Useful
- * as a baseline for "how fast is the CPU when not waiting for HW".
+ * Source is John Tsiombikas's c-ray-1.1 with minimal openfpgaOS glue; the
+ * scene is the built-in default. Render time (ms + ray counts) is logged
+ * to UART.
  *
- * Controls: none — runs to completion, then parks.
+ * Controls: A — exit once the render finishes.
  */
 
 #include <ctype.h>

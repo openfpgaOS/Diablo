@@ -148,7 +148,7 @@ if [ "$LISTEN" -eq 0 ]; then
     # state); always pushing runtime/os.bin via PHDP override eliminates
     # that dependency. Skipped if the user is already pushing os.bin
     # themselves (slot 1).
-    OS_BIN="$SDK_DIR/runtime/os.bin"
+    OS_BIN="$SDK_DIR/runtime/pocket/os.bin"
     if [ "$SLOT" != "1" ] && [ -f "$OS_BIN" ]; then
         "$PHDP" push --slot 1 "$OS_BIN"
     fi
@@ -157,7 +157,7 @@ if [ "$LISTEN" -eq 0 ]; then
     "$PHDP" push --slot "$SLOT" "$FILE"
 
     # ── Reset core via JTAG (quartus_pgm reload) ──────────────────────
-    SOF="$SDK_DIR/runtime/ap_core.sof"
+    SOF="$SDK_DIR/runtime/pocket/ap_core.sof"
     if [ ! -f "$SOF" ]; then
         echo -e "${RED}Missing JTAG bitstream: $SOF${RESET}"
         echo "Run 'make sdk DEST=...' from the openfpgaOS source tree to populate runtime/."

@@ -49,34 +49,51 @@ cd "$SDK_DIR"
 gh auth status >/dev/null 2>&1 || err "not logged in to GitHub — run 'gh auth login'."
 
 # ── Locate the packaged core and read its metadata ───────────────────
-BUNDLE="$SDK_DIR/build/$CORE"
-[ -d "$BUNDLE/Cores" ] || err "build/$CORE/ not found — run 'make package CORE=$CORE' first."
+# Per-target packaging/tag rules live in platforms/<target>/platform.conf
+# (PLATFORM_PRODUCT / TAG_SUFFIX / BUNDLE_KIND / COREJSON), so this script
+# names no target — adding a target = add that platform dir.
+TARGET="${TARGET:-pocket}"
+CONF="$SDK_DIR/src/sdk/platforms/$TARGET/platform.conf"
+[ -f "$CONF" ] || err "no platform.conf for target '$TARGET' (expected $CONF)."
+. "$CONF"
 
-CORE_JSON="$(ls "$BUNDLE"/Cores/*/core.json 2>/dev/null | head -1)"
-[ -n "$CORE_JSON" ] || err "no core.json under build/$CORE/Cores/."
+BUNDLE="$SDK_DIR/build/$TARGET/$CORE"
+case "$PLATFORM_BUNDLE_KIND" in
+    apf)   [ -d "$BUNDLE/Cores" ]          || err "build/$TARGET/$CORE/ not found — run 'make package CORE=$CORE TARGET=$TARGET' first." ;;
+    image) [ -f "$BUNDLE/openfpgaOS.vhd" ] || err "build/$TARGET/$CORE/ not found — run 'make package CORE=$CORE TARGET=$TARGET' first." ;;
+    *)     err "unknown PLATFORM_BUNDLE_KIND='$PLATFORM_BUNDLE_KIND' in $CONF." ;;
+esac
 
-# Pull version / display name / product straight from the core.json that the
-# packager used, so the tag, title and zip name can never disagree.
+# core.json lives either in the built bundle (apf) or only in dist/ (image).
+if [ "$PLATFORM_COREJSON" = "dist" ]; then
+    CORE_JSON="$(ls "$SDK_DIR/dist/$CORE"/Cores/*/core.json 2>/dev/null | head -1)"
+    [ -n "$CORE_JSON" ] || err "no core.json under dist/$CORE/Cores/."
+else
+    CORE_JSON="$(ls "$BUNDLE"/Cores/*/core.json 2>/dev/null | head -1)"
+    [ -n "$CORE_JSON" ] || err "no core.json under build/$TARGET/$CORE/Cores/."
+fi
+
+# Version + display name from core.json; product name from platform.conf.
 read_meta() {
     python3 - "$CORE_JSON" <<'PY'
 import json, sys
-core = json.load(open(sys.argv[1]))["core"]
-m    = core["metadata"]
-prod = core.get("framework", {}).get("target_product", "Analogue Pocket")
+m     = json.load(open(sys.argv[1]))["core"]["metadata"]
 short = m.get("shortname", "")
-disp  = short[:1].upper() + short[1:]      # doom -> Doom, heretic -> Heretic
 print(m.get("version", ""))
-print(disp)
-print(prod)
+print(short[:1].upper() + short[1:])       # doom -> Doom, heretic -> Heretic
 PY
 }
 
-{ read -r VERSION; read -r DISPLAY; read -r PRODUCT; } < <(read_meta)
+{ read -r VERSION; read -r DISPLAY; } < <(read_meta)
 [ -n "$VERSION" ] || err "could not read version from $CORE_JSON."
 
-TAG="$CORE-v$VERSION"
-TITLE="$DISPLAY for $PRODUCT v$VERSION"
-ZIP="$SDK_DIR/releases/$CORE-v$VERSION.zip"
+TAG="$CORE$PLATFORM_TAG_SUFFIX-v$VERSION"
+TITLE="$DISPLAY for $PLATFORM_PRODUCT v$VERSION"
+# Zip basename must match platforms/$TARGET/package.sh: the bundled demo core
+# "sdk" ships as "openfpgaOS-SDK".  Keep this rename in sync with package.sh.
+ZIP_LABEL="$CORE"
+[ "$ZIP_LABEL" = "sdk" ] && ZIP_LABEL="openfpgaOS-SDK"
+ZIP="$SDK_DIR/releases/$TARGET/$ZIP_LABEL-v$VERSION.zip"
 
 [ -f "$ZIP" ] || err "asset $ZIP not found — run 'make package CORE=$CORE' first."
 

@@ -8,8 +8,8 @@
 #
 # openfpgaOS SDK — Copy to Pocket SD Card
 #
-# Copies build/sdk/ (the complete SD card image) to the mounted SD card.
-# Run 'make' from src/apps/ first to assemble build/sdk/.
+# Copies build/pocket/sdk/ (the complete SD card image) to the mounted SD card.
+# Run 'make' from src/apps/ first to assemble build/pocket/sdk/.
 #
 # Usage:
 #   ./scripts/copy.sh                       Auto-detect Pocket SD card
@@ -21,12 +21,21 @@ set -e
 GREEN='\033[92m'
 RESET='\033[0m'
 
+# The SDK demo core is a Pocket-only bundle; on MiSTer each app is its own
+# disk image, so there is no single "SDK demo core" image to copy.  Steer
+# the user to the per-app path instead of silently copying a Pocket tree.
+if [ "${TARGET:-pocket}" = "mister" ]; then
+    echo "The SDK demo core ships per-app on MiSTer (one disk image each)."
+    echo "Push a single app instead, e.g.: make copy APP=<app> TARGET=mister"
+    exit 1
+fi
+
 SDK_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD_DIR="$SDK_DIR/build/sdk"
+BUILD_DIR="$SDK_DIR/build/pocket/sdk"
 
 # ── Check build exists ───────────────────────────────────────────────
 if [ ! -d "$BUILD_DIR/Cores" ]; then
-    echo "Error: build/sdk/ not found. Run 'make' from src/apps/ first."
+    echo "Error: build/pocket/sdk/ not found. Run 'make' from src/apps/ first."
     exit 1
 fi
 
@@ -34,13 +43,20 @@ fi
 SDCARD="$1"
 source "$(dirname "$0")/sdcard.sh"
 
-echo "Deploying build/sdk/ to $SDCARD"
+echo "Deploying build/pocket/sdk/ to $SDCARD"
 
 # ── Sync (only modified files) ───────────────────────────────────────
 RSYNC_OPTS=(-rlptv --checksum)
 
-# openfpgaOS folders: sync with --delete to remove stale files
-for sub in Cores/ThinkElastic.openfpgaOS Assets/openfpgaos; do
+# openfpgaOS folders: sync with --delete to remove stale files.  Every
+# ThinkElastic.openfpgaOS* core dir is synced (the os25 demo core AND the os30
+# 3D core ship as separate per-variant cores), plus the shared assets.
+CORE_SUBS=$(cd "$BUILD_DIR" && ls -d Cores/ThinkElastic.openfpgaOS* 2>/dev/null)
+# Asset trees: the os25 demo core (Assets/openfpgaos) AND the os30 3D core, which
+# lives on its own platform (Assets/openfpgaos3d) so the Pocket reconfigures the
+# FPGA on launch instead of reusing the demo core's already-loaded bitstream.
+ASSET_SUBS=$(cd "$BUILD_DIR" && ls -d Assets/openfpgaos* 2>/dev/null)
+for sub in $CORE_SUBS $ASSET_SUBS; do
     if [ -d "$BUILD_DIR/$sub" ]; then
         mkdir -p "$SDCARD/$sub"
         rsync "${RSYNC_OPTS[@]}" --delete "$BUILD_DIR/$sub/" "$SDCARD/$sub/"
