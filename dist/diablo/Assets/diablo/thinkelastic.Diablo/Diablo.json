@@ -27,6 +27,10 @@
                 "filename": "fonts.mpq"
             },
             {
+                "id": 8,
+                "filename": "stash.sv"
+            },
+            {
                 "id": 9,
                 "filename": "diablo.ini"
             },

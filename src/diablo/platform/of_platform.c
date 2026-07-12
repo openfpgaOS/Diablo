@@ -99,6 +99,17 @@ void of_platform_init(void)
 	of_file_slot_register(9, "diablo.ini");
 	of_file_slot_register(9, "hellfire.ini"); /* Hellfire instance binds this name */
 
+	/* Shared stash (DevilutionX GetStashSavePath -> "stash.sv" / "stash.hsv").
+	 * Previously UNREGISTERED: every stash save silently failed (MpqWriter's
+	 * "r+b" open found no slot, valid_=false) and the stash reset each boot.
+	 * Slot 8 is the otherwise-unused nonvolatile window at 0x20380000
+	 * (data.json binds its SD file). Same dual .sv/.hsv registration as the
+	 * hero slots: each game only ever opens its own extension.
+	 * NOTE: shareware ("stash_spawn.sv") and multiplayer ("multi_N.sv")
+	 * names remain unregistered -- those modes have no slots on this core. */
+	of_file_slot_register(8, "stash.sv");
+	of_file_slot_register(8, "stash.hsv");
+
 	/* The MPQs are opened directly by basename via the slot service. */
 }
 

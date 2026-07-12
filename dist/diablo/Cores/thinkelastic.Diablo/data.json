@@ -116,16 +116,18 @@
       },
       {
         "id": 8,
-        "name": "Shared Config",
+        "name": "Stash",
         "required": false,
         "parameters": "0x84",
         "nonvolatile": true,
         "address": "0x20380000",
         "size_maximum": "0x40000",
         "extensions": [
-          "cfg",
-          "bin"
-        ]
+          "sv",
+          "sav",
+          "hsv"
+        ],
+        "filename": "stash.sv"
       },
       {
         "id": 9,

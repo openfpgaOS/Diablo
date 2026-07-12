@@ -21,6 +21,7 @@
 #include "mpq/mpq_common.hpp"
 #include "pack.h"
 #include "playerdat.hpp"
+#include "plrmsg.h"
 #include "qol/stash.h"
 #include "utils/endian_read.hpp"
 #include "utils/file_util.h"
@@ -596,6 +597,13 @@ void pfile_write_hero(bool writeGameData)
 {
 	SaveWriter saveWriter = GetSaveWriter(gSaveNumber);
 	pfile_write_hero(saveWriter, writeGameData);
+	// [of] Historically every save failure (unwritable slot, capacity abort,
+	// stream error) was swallowed into a LogError nobody sees on device --
+	// "save looked fine, hero gone". Tell the player.
+	if (saveWriter.HadWriteFailure()) {
+		LogError("pfile_write_hero: save to slot {} failed", gSaveNumber);
+		EventPlrMsg(_("Save failed!"), UiFlags::ColorRed);
+	}
 }
 
 #ifndef DISABLE_DEMOMODE
@@ -634,7 +642,11 @@ void sfile_write_stash()
 
 	SaveStash(stashWriter);
 
-	Stash.dirty = false;
+	// [of] Only mark the stash clean if it actually reached the archive;
+	// clearing the flag on a failed write silently dropped stash changes
+	// (and on openfpgaOS the stash slot didn't even exist until now).
+	if (!stashWriter.HadWriteFailure())
+		Stash.dirty = false;
 }
 
 bool pfile_ui_set_hero_infos(bool (*uiAddHeroInfo)(_uiheroinfo *))

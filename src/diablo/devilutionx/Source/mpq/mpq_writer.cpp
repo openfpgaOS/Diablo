@@ -239,7 +239,16 @@ bool MpqWriter::IsValidMpqHeader(MpqFileHeader *hdr) const
 	    && hdr->headerSize == MpqFileHeader::DiabloSize
 	    && hdr->version <= 0
 	    && hdr->blockSizeFactor == BlockSizeFactor
-	    && hdr->fileSize == size_
+	    // [of] `<=`, not `==`: on the slot FS truncate() is a no-op, so the
+	    // physical size reported by stat() can be LARGER than the archive's
+	    // logical size whenever a save shrinks (and a fresh-but-committed
+	    // slot may report its full 256 KB capacity). Requiring equality made
+	    // every such reopen discard the existing archive via
+	    // InitDefaultMpqHeader -- i.e. one shrinking save silently erased
+	    // the hero. The stale tail past `fileSize` is harmless: both this
+	    // writer and libmpq address blocks by header offsets, never by
+	    // physical file size. ReadMPQHeader() adopts the logical size.
+	    && hdr->fileSize <= size_
 	    && hdr->hashEntriesOffset == MpqHashEntryOffset
 	    && hdr->blockEntriesOffset == sizeof(MpqFileHeader)
 	    && hdr->hashEntriesCount == HashEntriesCount
@@ -256,6 +265,11 @@ bool MpqWriter::ReadMPQHeader(MpqFileHeader *hdr)
 	}
 	if (!hasHdr || !IsValidMpqHeader(hdr)) {
 		InitDefaultMpqHeader(hdr);
+	} else if (hdr->fileSize != size_) {
+		// [of] Adopt the archive's logical size; the physical file is
+		// allowed to be larger (see IsValidMpqHeader). New blocks append
+		// from the logical end, overwriting the stale tail.
+		size_ = hdr->fileSize;
 	}
 	return true;
 }
@@ -412,28 +426,73 @@ bool MpqWriter::WriteFileContents(const char *filename, const byte *fileData, si
 
 	const uint32_t numSectors = (fileSize + (BlockSize - 1)) / BlockSize;
 	const uint32_t offsetTableByteSize = sizeof(uint32_t) * (numSectors + 1);
+
+#ifdef OPENFPGAOS
+	// [of] Compress-first strategy for the fixed-capacity CRAM save slot.
+	//
+	// Upstream (below, #else) reserves `fileSize + tableSize` -- the
+	// UNCOMPRESSED size -- via FindFreeBlock, streams compressed sectors
+	// with a seek-past-EOF backpatch, and gives the unused tail back
+	// afterwards. In a 256 KB slot that reservation is fatal: a ~200 KB
+	// uncompressed "game" file (~45 KB compressed) demands 200 KB of
+	// contiguous free space, so fragmented archives spuriously fail saves
+	// that would fit several times over (host soak test reproduced this by
+	// save #7). An earlier guard variant also set `valid_=false` on
+	// overflow, which no-op'ed the caller's RemoveHashEntry unwind and made
+	// ~MpqWriter skip the table flush -- in-memory/on-disk table divergence.
+	//
+	// Here we compress into a scratch buffer first (PkwareCompress never
+	// expands -- it falls back to the raw bytes), allocate EXACTLY the
+	// compressed size, bound-check it against the slot window once, and
+	// write table+sectors in a single sequential pass (no seek-past-EOF,
+	// no backpatch -- the pattern the slot FS is actually validated for).
+	// On overflow: return false with `valid_` intact; WriteFile() removes
+	// the hash entry and frees the block (restoring `size_`), and close
+	// still writes consistent tables.
+	{
+		std::unique_ptr<byte[]> packed { new byte[offsetTableByteSize + fileSize] };
+		uint32_t *offsetTable = reinterpret_cast<uint32_t *>(packed.get());
+		uint32_t destSize = offsetTableByteSize;
+		byte mpqBuf[BlockSize];
+		size_t curSector = 0;
+		size_t remaining = fileSize;
+		while (true) {
+			uint32_t len = std::min<uint32_t>(remaining, BlockSize);
+			memcpy(mpqBuf, fileData, len);
+			fileData += len;
+			len = PkwareCompress(mpqBuf, len);
+			memcpy(packed.get() + destSize, mpqBuf, len);
+			offsetTable[curSector++] = SDL_SwapLE32(destSize);
+			destSize += len;
+			if (remaining <= BlockSize)
+				break;
+			remaining -= BlockSize;
+		}
+		offsetTable[numSectors] = SDL_SwapLE32(destSize);
+
+		block->offset = FindFreeBlock(destSize);
+		block->packedSize = destSize;
+		block->unpackedSize = fileSize;
+		block->flags = MpqBlockEntry::FlagExists | MpqBlockEntry::CompressPkZip;
+
+		if (block->offset + destSize > OF_NV_SLOT_CAPACITY) {
+			LogError("MpqWriter: '{}' in {}: {} compressed bytes at offset {} exceed the {} KB slot; save aborted",
+			    filename, name_, static_cast<unsigned>(destSize), static_cast<unsigned>(block->offset),
+			    OF_NV_SLOT_CAPACITY / 1024);
+			return false;
+		}
+		if (!stream_.Seekp(block->offset, SEEK_SET))
+			return false;
+		if (!stream_.Write(reinterpret_cast<const char *>(packed.get()), destSize))
+			return false;
+		return true;
+	}
+#else
 	block->offset = FindFreeBlock(fileSize + offsetTableByteSize);
 	// `packedSize` is reduced at the end of the function if it turns out to be smaller.
 	block->packedSize = fileSize + offsetTableByteSize;
 	block->unpackedSize = fileSize;
 	block->flags = MpqBlockEntry::FlagExists | MpqBlockEntry::CompressPkZip;
-
-#ifdef OPENFPGAOS
-	// [of] Overflow backstop for the fixed-capacity CRAM save slot. Slots sit
-	// contiguously in CRAM0, so a write past this window would land in the
-	// neighbouring slot -> core crash + corruption of the adjacent save (the
-	// original "second save crashes and takes the save file with it" report).
-	// Plaintext saves are now PkWare-compressed (see codec.cpp), so a real save
-	// is ~110 KB and this should never fire; if it does, abort the save cleanly
-	// instead of scribbling outside the window. `packedSize` is the pre-compression
-	// upper bound, so the check is conservative.
-	if (block->offset + block->packedSize > OF_NV_SLOT_CAPACITY || size_ > OF_NV_SLOT_CAPACITY) {
-		LogError("MpqWriter: save '{}' would exceed the {} KB save slot ({} + {} bytes); aborting to protect the adjacent slot",
-		    name_, OF_NV_SLOT_CAPACITY / 1024, static_cast<unsigned>(block->offset), static_cast<unsigned>(block->packedSize));
-		valid_ = false;
-		return false;
-	}
-#endif
 
 	// We populate the table of sector offsets while we write the data.
 	// We can't pre-populate it because we don't know the compressed sector sizes yet.
@@ -498,6 +557,7 @@ bool MpqWriter::WriteFileContents(const char *filename, const byte *fileData, si
 		}
 	}
 	return true;
+#endif
 }
 
 bool MpqWriter::WriteHeader()
@@ -564,13 +624,17 @@ void MpqWriter::RemoveHashEntries(bool (*fnGetName)(uint8_t, char *))
 
 bool MpqWriter::WriteFile(const char *filename, const byte *data, size_t size)
 {
-	if (!valid_) return false; // [of] ctor failed: tables/stream not ready
+	if (!valid_) {
+		write_failed_ = true; // [of] ctor failed: tables/stream not ready
+		return false;
+	}
 	MpqBlockEntry *blockEntry;
 
 	RemoveHashEntry(filename);
 	blockEntry = AddFile(filename, nullptr, 0);
 	if (!WriteFileContents(filename, data, size, blockEntry)) {
 		RemoveHashEntry(filename);
+		write_failed_ = true; // [of] surfaced via HadWriteFailure()
 		return false;
 	}
 	return true;

@@ -30,6 +30,15 @@ public:
 	bool WriteFile(const char *filename, const byte *data, size_t size);
 	void RenameFile(const char *name, const char *newName);
 
+	// [of] True if the archive could not be opened or any WriteFile since
+	// construction failed. Callers use this to surface "save failed" to the
+	// player and to avoid clearing dirty flags -- historically every failure
+	// here was swallowed into a LogError nobody sees on device.
+	bool HadWriteFailure() const
+	{
+		return !valid_ || write_failed_;
+	}
+
 private:
 	bool IsValidMpqHeader(MpqFileHeader *hdr) const;
 	uint32_t GetHashIndex(uint32_t index, uint32_t hashA, uint32_t hashB) const;
@@ -66,6 +75,8 @@ private:
 	// keeps running in-memory with no save persistence, instead of app_fatal-
 	// exiting back to the launcher.
 	bool valid_ = false;
+	// [of] Set when any WriteFile fails (capacity abort, stream error).
+	bool write_failed_ = false;
 
 // Amiga cannot Seekp beyond EOF.
 // See https://github.com/bebbo/libnix/issues/30

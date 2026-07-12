@@ -85,7 +85,13 @@ const std::string &PrefPath()
 		prefPath = NxdkGetPrefPath();
 #else
 		prefPath = FromSDL(SDL_GetPrefPath("diasurgical", "devilution"));
-#if !defined(__amigaos__)
+		// [of] No portable-mode detection on openfpgaOS: the kernel resolves
+		// save files by BARE basename to fixed CRAM slots and the shim's
+		// pref path is "". diablo.ini is a writable slot, so this check
+		// always passed and rewrote every save path to "./single_0.sv" --
+		// whether that still resolved depended on kernel prefix stripping,
+		// and a first-boot (no ini yet) used "" while later boots used "./".
+#if !defined(__amigaos__) && !defined(OPENFPGAOS)
 		if (FileExistsAndIsWriteable("diablo.ini")) {
 			prefPath = std::string("." DIRECTORY_SEPARATOR_STR);
 		}
@@ -104,7 +110,8 @@ const std::string &ConfigPath()
 		configPath = NxdkGetPrefPath();
 #else
 		configPath = FromSDL(SDL_GetPrefPath("diasurgical", "devilution"));
-#if !defined(__amigaos__)
+		// [of] See PrefPath() above -- keep bare basenames on openfpgaOS.
+#if !defined(__amigaos__) && !defined(OPENFPGAOS)
 		if (FileExistsAndIsWriteable("diablo.ini")) {
 			configPath = std::string("." DIRECTORY_SEPARATOR_STR);
 		}
