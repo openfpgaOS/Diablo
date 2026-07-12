@@ -37,7 +37,7 @@ NAME=""
 SHORT=""
 PLATFORM=""
 TARGET="pocket"
-VARIANT="os25"     # os25 = 2.5D / full HW mixer; os30 = Quake2 (3D, HW vertex-tri)
+VARIANT="os25"     # os20 = 2D/dual-issue CPU; os25 = 2.5D / full HW mixer; os30 = Quake2 (3D, HW vertex-tri)
 
 # ── Color helpers ───────────────────────────────────────────────────
 GREEN='\033[92m'
@@ -75,7 +75,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --version VERSION   Version string [1.0.0]"
             echo "  --icon PATH         Core icon (.bin)"
             echo "  --target TARGET     Platform target [pocket]"
-            echo "  --variant VARIANT   Pocket bitstream variant: os25|os30 [os25]"
+            echo "  --variant VARIANT   Pocket bitstream variant: os20|os25|os30 [os25]"
             exit 0 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
@@ -116,7 +116,7 @@ if [[ $BATCH -eq 0 ]]; then
     VERSION=$(ask "Version" "$VERSION")
     ICON=$(ask "Core icon path (optional, Enter to skip)" "$ICON")
     [[ "$TARGET" == "pocket" ]] && \
-        VARIANT=$(ask "Pocket bitstream variant (os25=2.5D/full mixer, os30=Quake2 3D)" "$VARIANT")
+        VARIANT=$(ask "Pocket bitstream variant (os20=2D/dual-issue, os25=2.5D/full mixer, os30=Quake2 3D)" "$VARIANT")
 
     echo
 fi
@@ -128,13 +128,16 @@ fi
 [[ -z "$PLATFORM" ]] && PLATFORM=$(echo "$SHORT" | tr '[:upper:]' '[:lower:]')
 
 # Bitstream variant → the openFPGA core filename the core.json points at.
-# The name IS the variant token (os25.rbf_r / os30.rbf_r), kept short for
-# the Pocket's ~15-char filename cap.  Successive openfpgaOS builds publish
-# os25.rbf_r / os30.rbf_r into runtime/pocket/; the core picks one by name.
+# The name IS the variant token (os20.rbf_r / os25.rbf_r / os30.rbf_r), kept
+# short for the Pocket's ~15-char filename cap.  Successive openfpgaOS builds
+# publish the variant bitstreams into runtime/pocket/; the core picks one by
+# name.  os20 = 2D games / dual-issue CPU, os25 = 2.5D (default), os30 =
+# 3D triangles.
 case "$VARIANT" in
+    os20)    BITSTREAM="os20" ;;
     os30)    BITSTREAM="os30" ;;
     os25|"") VARIANT="os25"; BITSTREAM="os25" ;;
-    *) echo "Error: --variant must be os25 or os30 (got '$VARIANT')"; exit 1 ;;
+    *) echo "Error: --variant must be os20, os25 or os30 (got '$VARIANT')"; exit 1 ;;
 esac
 
 SNAME=$(echo "$SHORT" | tr '[:upper:]' '[:lower:]')

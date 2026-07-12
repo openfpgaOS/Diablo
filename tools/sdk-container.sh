@@ -65,7 +65,9 @@ fi
 # The ${TTY[@]+"${TTY[@]}"} idiom is required for bash 3.2 (macOS default)
 # under set -u — plain "${TTY[@]}" errors on an empty array there.
 TTY=()
-[ -t 1 ] && TTY=(-i -t)
+# Both stdin and stdout must be TTYs — `-i -t` fails ("cannot attach stdin to a
+# TTY-enabled container...") when stdin isn't a terminal, e.g. under make.
+[ -t 0 ] && [ -t 1 ] && TTY=(-i -t)
 
 # --user keeps outputs owned by the host user.  Repo bind-mounted at the
 # SAME path so absolute paths inside the app Makefile resolve identically.
@@ -81,16 +83,40 @@ TTY=()
 # `wait` (interruptible) so the trap fires on INT/TERM/EXIT.
 CNAME="ofpgaos-sdk-$$"
 trap 'oci_rm_force "$CNAME"' EXIT INT TERM
+# Backgrounding below (so the EXIT/INT trap cleans up the container on Ctrl+C)
+# detaches stdin to /dev/null, which a -i -t TTY rejects ("cannot attach stdin
+# to a TTY-enabled container because stdin is not a terminal") — exactly what
+# an interactive `make` hits now that the container is the default build path.
+# When a TTY was allocated, hand the controlling terminal (/dev/tty) to the
+# backgrounded run; otherwise /dev/null is correct.  Same fix as
+# quartus17-container.sh.
+STDIN_SRC=/dev/null
+[ ${#TTY[@]} -gt 0 ] && STDIN_SRC=/dev/tty
 # The shared image sets CPATH=/usr/lib/picolibc/... for the firmware build,
 # but SDK apps link musl and must NOT see picolibc (its types collide with
 # musl's, and CPATH dirs survive -nostdinc).  Clear CPATH for the app build.
+# OF_SDK_IN_CONTAINER=1 tells sdk.mk it is now INSIDE the containerized
+# toolchain (its default-path app.elf rule re-execs make through this script
+# and must not recurse).  MAKEFLAGS is forwarded so command-line variable
+# overrides (e.g. `make build CFLAGS=-DDEBUG`) survive the re-exec.
+# A jobserver-style MAKEFLAGS (from an outer `make -jN`) references pipe
+# fds / a fifo that don't exist inside the container — the inner make would
+# warn and fall back to SERIAL.  Rewrite it to a plain -j<nproc> so inner
+# builds keep their parallelism.
+MF="${MAKEFLAGS:-}"
+if [[ "$MF" == *jobserver* ]]; then
+    MF="$(printf '%s' "$MF" | sed -E 's/--jobserver-(auth|fds|style)=[^ ]+//g; s/(^| )-j[0-9]*( |$)/\1\2/g')"
+    MF="$MF -j$(nproc)"
+fi
 oci_run --rm --name "$CNAME" ${TTY[@]+"${TTY[@]}"} \
   --user "$(id -u):$(id -g)" \
   -v "$REPO:$REPO" \
   --tmpfs /sdkhome:exec \
   -e HOME=/sdkhome \
   -e CPATH= \
+  -e OF_SDK_IN_CONTAINER=1 \
+  -e "MAKEFLAGS=$MF" \
   -w "$WORKDIR" \
   "$IMG" \
-  "$@" &
+  "$@" < "$STDIN_SRC" &
 wait $!

@@ -76,12 +76,19 @@ RBF="_Computer/OpenfpgaOS"    # the game-agnostic core, per the locked model
 # relative path would resolve under games/OpenfpgaOS/, the wrong tree).
 SAVES_DIR="/media/fat/saves/OpenfpgaOS"
 
+# --single: emit ONE "<Game>.mgl" bootstrap launcher (boots a default instance;
+# the user switches wads/mods in-OS via the core's "Load Instance" browser)
+# instead of one launcher per instance.  All instances share the same boot.vhd
+# + engine, so a single launcher + in-OS switching reaches every wad.
+SINGLE=0
+[[ "$1" == "--single" ]] && { SINGLE=1; shift; }
+
 GAME="$1"
 INIS_DIR="$2"
 OUT_DIR="$3"
 
 [[ -z "$GAME" || -z "$INIS_DIR" || -z "$OUT_DIR" ]] && {
-    echo "Usage: $0 <Game> <inis_dir> <out_dir>"
+    echo "Usage: $0 [--single] <Game> <inis_dir> <out_dir>"
     exit 1
 }
 [[ -d "$INIS_DIR" ]] || fail "inis dir not found: $INIS_DIR"
@@ -92,36 +99,62 @@ source "$SCRIPT_DIR/validate-ini.sh"
 
 mkdir -p "$OUT_DIR"
 
+# emit_mgl <mgl_stem> <elf> <ini_basename> — write one launcher.  The four
+# <file> lines stay in strict delay order (ELF index-2 BEFORE ini index-1; only
+# the ini F-load resets the SoC and the OS loads the app from ELF staging on
+# that reboot — see header, "ORDER IS CORRECTNESS-CRITICAL").
+emit_mgl() {
+    local stem_="$1" elf_="$2" base_="$3"
+    {
+        printf '<mistergamedescription>\n'
+        printf '\t<rbf>%s</rbf>\n' "$RBF"
+        printf '\t<file delay="1" type="s" index="0" path="%s/boot.vhd"/>\n' "$GAME"
+        printf '\t<file delay="2" type="s" index="1" path="%s/%s.vhd"/>\n' "$SAVES_DIR" "$GAME"
+        printf '\t<file delay="3" type="f" index="2" path="%s/%s"/>\n' "$GAME" "$elf_"
+        printf '\t<file delay="4" type="f" index="1" path="%s/%s"/>\n' "$GAME" "$base_"
+        printf '</mistergamedescription>\n'
+    } > "$OUT_DIR/$stem_.mgl"
+    ok "$stem_.mgl -> S0 $GAME/boot.vhd + S1 $SAVES_DIR/$GAME.vhd + F2(elf) $GAME/$elf_ + F1(ini) $GAME/$base_"
+}
+
 INIS=("$INIS_DIR"/*.ini)
 [[ ${#INIS[@]} -gt 0 ]] || fail "no *.ini in $INIS_DIR"
 
 COUNT=0
-for ini in "${INIS[@]}"; do
-    base="$(basename "$ini")"
-    [[ "$base" == ._* ]] && continue
-    stem="${base%.ini}"          # lowercase on-card ini name (plutonia.ini)
-
-    triple="$(validate_ini "$ini" "$GAME" "$stem")" || fail "$base failed validation"
-    inst="$(printf '%s' "$triple" | cut -f2)"   # Capitalized instance (Plutonia)
-    elf="$(printf '%s'  "$triple" | cut -f3)"   # loose engine ELF name (doom.elf)
-
-    mgl="$OUT_DIR/$inst.mgl"
-    # Emit the 4 <file> lines in strict delay order.  The index-2 ELF F-load
-    # MUST precede the index-1 ini F-load: only the ini F-load resets the SoC,
-    # and the OS loads the app from ELF staging on that reboot — so the ELF has
-    # to be staged first (see header, "ORDER IS CORRECTNESS-CRITICAL").
+if [[ "$SINGLE" == 1 ]]; then
+    # BOOTSTRAP launcher "<Game>.mgl": mount the disks + stage the engine but
+    # load NO ini.  The OS parks at "Select an instance from the OSD" and the
+    # user picks the game in-core via "Load Instance" (all wads live in the
+    # shared boot.vhd; the engine stays staged across the ini_reset).  Any
+    # validated instance is used only to resolve the ELF name.
+    default_ini=""
+    for cand in "$INIS_DIR/${GAME,,}.ini" "${INIS[@]}"; do
+        [[ -f "$cand" && "$(basename "$cand")" != ._* ]] && { default_ini="$cand"; break; }
+    done
+    [[ -n "$default_ini" ]] || fail "no usable ini in $INIS_DIR"
+    base="$(basename "$default_ini")"
+    triple="$(validate_ini "$default_ini" "$GAME" "${base%.ini}")" || fail "$base failed validation"
+    elf="$(printf '%s' "$triple" | cut -f3)"
     {
         printf '<mistergamedescription>\n'
         printf '\t<rbf>%s</rbf>\n' "$RBF"
         printf '\t<file delay="1" type="s" index="0" path="%s/boot.vhd"/>\n' "$GAME"
         printf '\t<file delay="2" type="s" index="1" path="%s/%s.vhd"/>\n' "$SAVES_DIR" "$GAME"
         printf '\t<file delay="3" type="f" index="2" path="%s/%s"/>\n' "$GAME" "$elf"
-        printf '\t<file delay="4" type="f" index="1" path="%s/%s"/>\n' "$GAME" "$base"
-        printf '</mistergamedescription>\n'
-    } > "$mgl"
-    ok "$inst.mgl -> S0 $GAME/boot.vhd + S1 $SAVES_DIR/$GAME.vhd + F2(elf) $GAME/$elf + F1(ini) $GAME/$base"
-    COUNT=$(( COUNT + 1 ))
-done
+    } > "$OUT_DIR/$GAME.mgl"
+    ok "$GAME.mgl (bootstrap: mount + stage $elf, NO ini — OS parks at Select Instance)"
+    COUNT=1
+else
+    for ini in "${INIS[@]}"; do
+        base="$(basename "$ini")"            # lowercase on-card ini (plutonia.ini)
+        [[ "$base" == ._* ]] && continue
+        triple="$(validate_ini "$ini" "$GAME" "${base%.ini}")" || fail "$base failed validation"
+        inst="$(printf '%s' "$triple" | cut -f2)"   # Capitalized instance (Plutonia)
+        elf="$(printf '%s'  "$triple" | cut -f3)"   # loose engine ELF name (doom.elf)
+        emit_mgl "$inst" "$elf" "$base"
+        COUNT=$(( COUNT + 1 ))
+    done
+fi
 
 echo "mkmgl: $COUNT launcher(s) → $OUT_DIR"
 [[ $COUNT -gt 0 ]] || fail "no launchers emitted"

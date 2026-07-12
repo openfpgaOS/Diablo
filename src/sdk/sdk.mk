@@ -41,8 +41,19 @@
 # musl's startup chain works without any custom CRT.
 #
 
-# ── Toolchain (auto-detect) ───────────────────────────────────────────
-CROSS ?= $(shell which riscv64-unknown-elf-gcc >/dev/null 2>&1 && echo riscv64-unknown-elf- || echo riscv64-elf-)
+# ── Toolchain ─────────────────────────────────────────────────────────
+# RISC-V compiles run in the SDK container by DEFAULT (see the container
+# section below), where the toolchain is PINNED to riscv64-unknown-elf- —
+# every app on every host builds with the same compiler as the OS kernel
+# and the bundled musl.  The auto-detect fallback exists only for the
+# explicit host opt-out (USE_SDK_CONTAINER=0); note host prefixes vary
+# (riscv64-elf- on Arch/Homebrew), which is exactly the reproducibility
+# gap the container default closes.
+ifeq ($(OF_SDK_IN_CONTAINER),1)
+CROSS  := riscv64-unknown-elf-
+else
+CROSS  ?= $(shell which riscv64-unknown-elf-gcc >/dev/null 2>&1 && echo riscv64-unknown-elf- || echo riscv64-elf-)
+endif
 CC      = $(CROSS)gcc
 CXX     = $(CROSS)g++
 LD      = $(CROSS)gcc
@@ -138,12 +149,11 @@ OF_CXXABI_SRC = $(SDK_DIR)/of_cxxabi.cpp
 # of_init.c installs SDK-wide defaults (e.g. unbuffered stdout) via a
 # constructor that runs before main. It is auto-linked into every app
 # so individual Makefiles never need to mention it.
+# (Compile rules live in the guarded RISC-V section below — like every
+# other RISC-V compile, they only exist inside the container / on an
+# explicit host opt-out.)
 OF_INIT_SRC = $(SDK_DIR)/of_init.c
 OF_INIT_OBJ = $(OBJ_DIR)/of_init.o
-
-$(OF_INIT_OBJ): $(OF_INIT_SRC)
-	@mkdir -p $(dir $@)
-	$(CC) $(ALL_CFLAGS) -c -o $@ $<
 
 # of_sdl2.c is the single implementation TU for the SDL2 / SDL_mixer
 # compatibility layer (<SDL2/SDL.h>, <SDL2/SDL_mixer.h>). It is auto-linked
@@ -154,17 +164,77 @@ $(OF_INIT_OBJ): $(OF_INIT_SRC)
 OF_SDL2_SRC = $(SDK_DIR)/of_sdl2.c
 OF_SDL2_OBJ = $(OBJ_DIR)/of_sdl2.o
 
-$(OF_SDL2_OBJ): $(OF_SDL2_SRC)
-	@mkdir -p $(dir $@)
-	$(CC) $(ALL_CFLAGS) -c -o $@ $<
-
 # ── Sources / objects ────────────────────────────────────────────────
 SRCS_CXX ?=
 APP_C_OBJS   = $(patsubst %.c,$(OBJ_DIR)/%.o,$(filter %.c,$(SRCS)))
 APP_CXX_OBJS = $(patsubst %.cpp,$(OBJ_DIR)/%.o,$(filter %.cpp,$(SRCS_CXX)))
 APP_OBJS     = $(APP_C_OBJS) $(APP_CXX_OBJS)
 
-# ── Pocket build ─────────────────────────────────────────────────────
+# ── Container-by-default RISC-V build ────────────────────────────────
+# The app .elf must come from the SAME containerized toolchain as the OS
+# kernel and musl — so when this make runs OUTSIDE the container (the
+# normal case), the app.elf rule below delegates the whole compile+link
+# to ONE `make` run inside the openfpgaos-firmware image (toolchain
+# pre-installed; image auto-builds on first use).  Host-side targets
+# around it (packaging, copy, app_pc, sdk-clean) still run on the host.
+#
+#   make build                 → compiles in the container (default)
+#   make build USE_SDK_CONTAINER=0 → explicit host-toolchain opt-out
+#
+# sdk-container.sh exports OF_SDK_IN_CONTAINER=1 (and forwards MAKEFLAGS,
+# so command-line variable overrides survive the re-exec); the inner make
+# then takes the real-rules branch.
+USE_SDK_CONTAINER ?= 1
+SDK_DELEGATE := 0
+ifeq ($(USE_SDK_CONTAINER),1)
+ifneq ($(OF_SDK_IN_CONTAINER),1)
+SDK_DELEGATE := 1
+endif
+endif
+
+ifeq ($(SDK_DELEGATE),1)
+
+# Outside the container: hand the .elf build off wholesale.  No object
+# prerequisites here — the host make must not compile anything RISC-V.
+# (App Makefiles that add extra prerequisites to app.elf — generated
+# assets etc. — still get them built on the host first, as intended.)
+$(BUILD_DIR)/app.elf: SDK_FORCE
+	@bash $(SDK_CONTAINER) make -f $(firstword $(MAKEFILE_LIST)) $@
+SDK_FORCE:
+.PHONY: SDK_FORCE
+
+else
+
+# ── Toolchain-mix guard ──────────────────────────────────────────────
+# Objects from the container toolchain and a host toolchain must never
+# link together (different compilers — the exact mixing this SDK build
+# forbids).  Stamp the object dir with the compiler id and fail early
+# with a clear message when it changed (container ↔ host switch) instead
+# of silently linking a mixed .elf.
+SDK_CC_ID := $(CROSS)$(shell $(CC) -dumpfullversion 2>/dev/null)
+# Objects that already exist when this make starts (evaluated at parse
+# time) — used to catch trees built BEFORE the toolchain stamp existed
+# (e.g. pre-container-default host builds), which the stamp comparison
+# alone can't see.
+SDK_STALE_OBJS := $(wildcard $(APP_OBJS) $(OF_INIT_OBJ) $(OF_SDL2_OBJ))
+$(OBJ_DIR)/.sdk-ccid: SDK_FORCE
+	@mkdir -p $(OBJ_DIR)
+	@if [ ! -s $@ ] && [ -n "$(firstword $(SDK_STALE_OBJS))" ]; then \
+		printf '*** sdk: existing objects predate the toolchain stamp (host-built?).\n'; \
+		printf '*** They cannot be trusted to match this toolchain — run: make sdk-clean\n'; \
+		exit 1; \
+	fi
+	@if [ -s $@ ] && [ "$$(cat $@)" != "$(SDK_CC_ID)" ]; then \
+		printf '*** sdk: toolchain changed (%s -> %s).\n' "$$(cat $@)" "$(SDK_CC_ID)"; \
+		printf '*** Objects cannot mix across compilers — run: make sdk-clean\n'; \
+		exit 1; \
+	fi
+	@echo "$(SDK_CC_ID)" > $@
+SDK_FORCE:
+.PHONY: SDK_FORCE
+$(APP_OBJS) $(OF_INIT_OBJ) $(OF_SDL2_OBJ): | $(OBJ_DIR)/.sdk-ccid
+
+# ── RISC-V compile + link (inside the container, or explicit host) ───
 # OF_INIT_OBJ is linked alongside the app objects so its constructor
 # (in .init_array, KEEP'd by app.ld) is picked up by the linker even
 # under --gc-sections. OF_SDL2_OBJ supplies the SDL2/SDL_mixer shim and is
@@ -180,6 +250,16 @@ $(OBJ_DIR)/%.o: %.c
 $(OBJ_DIR)/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(ALL_CXXFLAGS) -c -o $@ $<
+
+$(OF_INIT_OBJ): $(OF_INIT_SRC)
+	@mkdir -p $(dir $@)
+	$(CC) $(ALL_CFLAGS) -c -o $@ $<
+
+$(OF_SDL2_OBJ): $(OF_SDL2_SRC)
+	@mkdir -p $(dir $@)
+	$(CC) $(ALL_CFLAGS) -c -o $@ $<
+
+endif
 
 # ── PC build (SDL2) ──────────────────────────────────────────────────
 PC_CC  ?= cc
@@ -213,24 +293,19 @@ sdk-clean:
 	rm -f $(APP_OBJS) $(OF_INIT_OBJ) $(OF_SDL2_OBJ) $(BUILD_DIR)/app.elf app_pc
 	@if [ "$(OBJ_DIR)" != "." ] && [ -d "$(OBJ_DIR)" ]; then rm -rf "$(OBJ_DIR)"; fi
 
-# ── Containerized build (no host RISC-V toolchain needed) ────────────
-# `make build` uses the host riscv64-unknown-elf toolchain — works when
-# it's installed.  For a portable build that works on any host with Docker,
-# prefix any target with `container-` and the SDK container wrapper runs
-# `make <target>` inside the openfpgaos-firmware image (toolchain + musl
-# pre-installed).  One container startup per make invocation amortizes
-# across the whole build.
-#
-# Examples:
-#     make container-build      → runs `make build` in the container
-#     make container-app.elf    → runs `make app.elf` in the container
-#     make container-sdk-clean  → cleans inside the container
-#
-# Downstream cores reusing this SDK get the same flow for free — both
-# sdk-container.sh and Dockerfile.firmware are mirrored into the SDK repo
-# at <sdk-repo>/tools/ by openfpgaCore's `make sdk DEST=...` step (so
-# the wrapper sits above src/sdk/, not inside it).  See docs/SDK_PORTING.md.
+# ── Container wrapper location ───────────────────────────────────────
+# The container is the DEFAULT build path (see the delegate rule above) —
+# sdk-container.sh runs `make <goal>` inside the openfpgaos-firmware image
+# (toolchain + musl pre-installed; auto-built on first use).  Downstream
+# cores reusing this SDK get the same flow for free — sdk-container.sh,
+# oci.sh and Dockerfile.firmware are mirrored into the SDK repo at
+# <sdk-repo>/tools/ by the OS tree's `make sdk DEST=...` step (so the
+# wrapper sits above src/sdk/, not inside it).  See docs/SDK_PORTING.md.
 SDK_CONTAINER ?= $(abspath $(SDK_DIR)/../../tools/sdk-container.sh)
+
+# Legacy explicit form (predates container-by-default; kept so existing
+# muscle memory / scripts keep working):
+#     make container-build      → runs `make build` in the container
 container-%:
 	@bash $(SDK_CONTAINER) make -f $(firstword $(MAKEFILE_LIST)) $*
 .PHONY: container-%

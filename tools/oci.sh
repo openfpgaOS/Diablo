@@ -65,6 +65,17 @@ oci_image_exists() { "$OCI" image inspect "$1" >/dev/null 2>&1; }
 # RUN --mount) work; Apple container's builder is BuildKit-based natively.
 oci_build() {
     if [ "$OCI" = docker ]; then
+        # BuildKit Dockerfiles (# syntax= / RUN --mount) need the buildx plugin.
+        # Modern Docker routes all BuildKit builds through it; without it you get
+        # a cryptic "unknown flag: --platform".  Fail with an actionable message.
+        if ! docker buildx version >/dev/null 2>&1; then
+            echo "ERROR: this image needs Docker BuildKit, but the 'docker buildx'" >&2
+            echo "       plugin is missing.  Install it, then rerun:" >&2
+            echo "         Arch:    sudo pacman -S docker-buildx" >&2
+            echo "         Debian:  sudo apt-get install docker-buildx-plugin" >&2
+            echo "         manual:  drop the buildx binary at ~/.docker/cli-plugins/docker-buildx (chmod +x)" >&2
+            return 1
+        fi
         DOCKER_BUILDKIT=1 docker buildx build "$@"
     else
         "$OCI" build "$@"

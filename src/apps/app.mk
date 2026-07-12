@@ -30,8 +30,10 @@ SRCS_CXX ?= $(wildcard *.cpp)
 
 include $(SDK_DIR)/sdk.mk
 
+# Size report is best-effort: the .elf builds in the SDK container, so a
+# host without any RISC-V binutils (the Docker-only UX) must not fail here.
 all: $(OBJ_DIR)/app.elf
-	@$(SIZE) $<
+	@$(SIZE) $< 2>/dev/null || true
 
 # UART push of this single SDK app's ELF (no SDK release/assembly step
 # needed — the bare app.elf is what the loader expects).

@@ -32,7 +32,8 @@
  *   }
  *
  * Platform: Analogue Pocket FPGA, RISC-V (VexiiRiscv) @ 100 MHz
- * Video:    320x240, 8-bit indexed color, triple-buffered
+ * Video:    source modes up to 800x600 (boot default 320x240; output
+ *           path supports 480p), 8-bit indexed color, triple-buffered
  * Audio:    48 kHz PCM FIFO + 32-voice mixer; sample-based
  *           MIDI synth (SF2 → .ofsf banks)
  * Input:    2 controllers, d-pad + ABXY + L/R + sticks + triggers

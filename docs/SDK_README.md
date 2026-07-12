@@ -2,7 +2,7 @@
 
 Build games for the [Analogue Pocket](https://www.analogue.co/pocket) in C or C++.
 
-**Hardware:** VexiiRiscv rv32imafc @ 100 MHz, 8 KB I-cache + 32 KB D-cache, 64 MB SDRAM, 320x240 video, 48 kHz stereo audio, 32-voice hardware PCM mixer, and sample-based MIDI playback.
+**Hardware:** VexiiRiscv rv32imafc @ 100 MHz (CPU config varies by bitstream variant; the os20 2D variant is dual-issue with 32 KB I-cache + 64 KB D-cache), 64 MB SDRAM, video source modes up to 800x600 (boot default 320x240; the output path supports 480p), 48 kHz stereo audio, 32-voice hardware PCM mixer, and sample-based MIDI playback.
 
 > **New here?** See [GETTING_STARTED.md](GETTING_STARTED.md) — clone to running code in 5 minutes.
 
@@ -574,9 +574,9 @@ of_cache_flush_video();           // Flush D-cache for framebuffer
 of_cache_invalidate_icache();     // Invalidate I-cache (after code loading)
 ```
 
-### BRAM Hot Path — `of_bram.h`
+### BRAM Hot Path — `of_fastram.h`
 
-Place performance-critical functions in on-chip BRAM for zero-wait-state execution (~55 KB available). Normal code runs from SDRAM with cache; BRAM code has guaranteed zero-cycle latency.
+Place performance-critical functions in on-chip BRAM for zero-wait-state execution (14 KB available — `APP_BRAM` in `app.ld` is the ground truth). Normal code runs from SDRAM with cache; BRAM code has guaranteed zero-cycle latency (fetches bypass the I-cache entirely).
 
 ```c
 #include "of.h"
@@ -593,7 +593,7 @@ int main(void) {
 }
 ```
 
-The linker places `OF_FASTTEXT` code in BRAM (VMA 0x2000-0xFE00) with load data in SDRAM. The OS copies it to BRAM at app startup. No runtime API needed — just annotate functions.
+The linker places `OF_FASTTEXT` code in BRAM (VMA 0x4000-0x7800) with load data in SDRAM. The OS copies it to BRAM at app startup. No runtime API needed — just annotate functions.
 
 ### Version — `of_version.h`
 
@@ -715,9 +715,9 @@ make                                # rebuild your app
 ```
 0x00000000 ┌──────────────────────┐
            │ BRAM (32 KB)         │
-           │ 0x0000-0x1FFF: OS    │  Boot, trap handler
-           │ 0x2000-0x7DFF: App   │  OF_FASTTEXT (~24 KB)
-           │ 0x7E00-0x7FFF: Stack │  Trap frame
+           │ 0x0000-0x3FFF: OS    │  Boot, trap handler
+           │ 0x4000-0x77FF: App   │  OF_FASTTEXT (14 KB)
+           │ 0x7800-0x7FFF: OS    │  Reserve (stack / trap frame)
 0x00008000 ├──────────────────────┤
            │                      │
 0x10300000 ├──────────────────────┤

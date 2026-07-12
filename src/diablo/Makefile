@@ -26,7 +26,18 @@ CC      := $(CROSS)gcc
 CXX     := $(CROSS)g++
 SIZE    := $(CROSS)size
 STRIP   := $(CROSS)strip
-ARCH    := -march=rv32imafc -mabi=ilp32f
+# BITMANIP=1 appends the Zba/Zbb bit-manipulation extensions (sh1add/sh2add
+# address generation, min/max, andn) to -march. The LUT-heavy blit loops
+# benefit directly, but instructions the core does not implement trap at
+# runtime -- leave this off until the bitstream's VexiiRiscv config is
+# confirmed to include B-ext.
+#   2026-07-09 status: NO shipped core has B-ext.  Zba+Zbb was A/B'd on
+#   os20 (50-seed sweeps) and REJECTED: Zbb's rotate/clz/rev8 widen the
+#   early-ALU result mux inside the CPU's mandatory full-bypass loop,
+#   regressing the whole timing distribution ~1.2 ns (−1.11 → −2.32 best).
+#   A Zba-only core remains untried; until one ships, BITMANIP=1 traps.
+ISA     := rv32imafc$(if $(filter 1,$(BITMANIP)),_zba_zbb)
+ARCH    := -march=$(ISA) -mabi=ilp32f
 
 # C++ system header dirs: ask the compiler itself (robust across prefixes).
 CXXINC  := $(shell echo | $(CXX) $(ARCH) -x c++ -E -Wp,-v - 2>&1 | sed -n 's,^ \(/.*c++.*\),-isystem \1,p')
@@ -59,10 +70,26 @@ ifeq ($(PERF),1)
   DEFS += -DOF_PERF_TRACE
 endif
 
+# ── GPU bring-up (EXPERIMENTAL, default OFF) ──────────────────────────
+# GPU=1 links platform/of_gpu_bridge.c (the one TU allowed to include
+# of_gpu.h) and defines OF_DIABLO_GPU: boot-time GPU feature report +
+# command-path smoke test, plus LightTables -> palookup and transparency
+# LUT -> translucency-RAM uploads at level load. Stage-1 scaffolding for
+# a GPU floor pass; the per-frame render path is untouched.
+ifeq ($(GPU),1)
+  DEFS += -DOF_DIABLO_GPU
+endif
+
 # -fno-math-errno / -fno-trapping-math: this is bare metal with no errno-based
 # libm error checking and no installed FP traps, so these change no FP result
 # bits but let GCC treat math calls as pure and skip errno/trap bookkeeping.
-COMMON := $(ARCH) -Os -fno-math-errno -fno-trapping-math \
+# Tree-wide optimization level. -Os was the long-standing default, chosen
+# when the core was believed to have an 8 KB I-cache; os20 actually has
+# 32 KB I + 64 KB D (dual-issue), and the blanket -O2 build measured faster
+# on HW (2026-07), so -O2 is now the default. A/B the old size build with:
+#   make clean && make BASE_OPT=-Os
+BASE_OPT ?= -O2
+COMMON := $(ARCH) $(BASE_OPT) -fno-math-errno -fno-trapping-math \
           -ffunction-sections -fdata-sections -fno-tree-loop-distribute-patterns \
           -include $(CURDIR)/platform/of_ctype_compat.h $(DEFS) $(APPINC) $(SYSINC) \
           -Wno-unknown-pragmas -Wno-unused-parameter -Wno-unused-variable -Wno-sign-compare
@@ -104,6 +131,9 @@ PKW_SRCS  := $(DX)/3rdParty/PKWare/explode.cpp $(DX)/3rdParty/PKWare/implode.cpp
 LOC_CXX   := $(CURDIR)/sdl/of_sdl2.cpp $(CURDIR)/sdl/of_aulib.cpp $(CURDIR)/platform/devx_stubs.cpp
 LOC_C     := $(CURDIR)/platform/of_libc_compat.c $(CURDIR)/platform/zlib_bzip2_stub.c \
              $(CURDIR)/platform/of_platform.c $(SDK)/of_init.c
+ifeq ($(GPU),1)
+  LOC_C   += $(CURDIR)/platform/of_gpu_bridge.c
+endif
 
 # ── Object mapping (mirror tree under OBJDIR; flatten the source root) ──
 obj = $(OBJDIR)/$(patsubst $(ROOT)/%,%,$(1)).o
@@ -118,22 +148,27 @@ LOC_OBJS := $(foreach s,$(LOC_CXX) $(LOC_C),$(call obj,$(s)))
 ALL_OBJS := $(DX_OBJS) $(FMT_OBJS) $(MPQ_OBJS) $(BZIP2_OBJS) $(SMK_OBJS) $(PKW_OBJS) $(LOC_OBJS)
 
 # ── Speed build for hot translation units (DEFAULT ON) ────────────────
-# The whole tree is -Os: RAM is plentiful, but the in-order 100 MHz core
-# has a small I-cache, so blanket -O2 is not an obvious win.  HOT_OPT
-# compiles only the speed-critical TUs at a higher level:
+# The whole tree defaults to -Os (see BASE_OPT above); HOT_OPT compiles
+# only the speed-critical TUs at a higher level:
 #   - frame time:  the software renderer (dun_render/clx_render/scrollrt/
-#     text_render) + the SDL/audio shims — these bound fps, and shorter
-#     frames also shrink the audio-feed gap;
+#     text_render/primitive_render), per-frame light propagation
+#     (lighting), palette fades/cycling (palette) + the SDL/audio shims —
+#     these bound fps, and shorter frames also shrink the audio-feed gap;
 #   - load time:   every decompress/convert pass a load runs (bzip2,
 #     PKWARE explode, libmpq huffman/ADPCM for SFX, CEL/CL2/PCX -> CLX
 #     conversion) — loads measure CPU-dominated, not SD-dominated;
 #   - cutscenes:   the Smacker bit-reader/decoder inner loops.
 # Disable for an A/B baseline with:  make HOT_OPT=
-HOT_OPT ?= -O2 -ffp-contract=fast
+# With the tree now at -O2 (BASE_OPT above), HOT_OPT's remaining job is
+# lifting the hot list to -O3 (unrolling helps the RLE decode / blit inner
+# loops; code growth stays confined to these TUs).
+HOT_OPT ?= -O3 -ffp-contract=fast
 HOT_SRCS := \
     $(CURDIR)/sdl/of_aulib.cpp $(CURDIR)/sdl/of_sdl2.cpp \
     $(DX)/Source/engine/render/dun_render.cpp $(DX)/Source/engine/render/clx_render.cpp \
     $(DX)/Source/engine/render/scrollrt.cpp $(DX)/Source/engine/render/text_render.cpp \
+    $(DX)/Source/engine/render/primitive_render.cpp \
+    $(DX)/Source/engine/palette.cpp $(DX)/Source/lighting.cpp \
     $(TP)/bzip2/decompress.c $(TP)/bzip2/huffman.c $(TP)/libmpq/libmpq/explode.c \
     $(TP)/libmpq/libmpq/huffman.c $(TP)/libmpq/libmpq/wave.c \
     $(DX)/Source/utils/cel_to_clx.cpp $(DX)/Source/utils/cl2_to_clx.cpp \
@@ -166,10 +201,35 @@ $(OBJDIR)/%.o: $(ROOT)/% $(CURDIR)/Makefile
 	  *.c)        echo "CC  $*"; $(CC)  $(CFLAGS)  -c -o $@ "$<" ;; \
 	esac
 
+# ── Container build guard (mirrors sdk.mk) — HOST BY DEFAULT here ───
+# ⚠ Diablo is the ONE documented host-toolchain exception among the game
+# repos: DevilutionX links the toolchain's REAL libstdc++/libsupc++ (and
+# needs the C++ standard headers), and Ubuntu's gcc-riscv64-unknown-elf —
+# the openfpgaos-firmware container toolchain — ships NO bare-metal C++
+# runtime at all (`#include <string>` fails; no rv32 libstdc++.a exists
+# as any Ubuntu package; the *-riscv64-cross packages are linux-gnu).
+# Every other repo builds freestanding C++ (-nostdinc, of_cxxabi shim)
+# and containerizes fine.  Flip USE_SDK_CONTAINER to default 1 here as
+# soon as the shared image gains a C++-runtime-equipped bare-metal
+# toolchain (e.g. xPack riscv-none-elf-gcc) — the delegate plumbing below
+# is already in place.
+USE_SDK_CONTAINER ?= 0
+SDK_CONTAINER    ?= $(ROOT)/tools/sdk-container.sh
+ifeq ($(USE_SDK_CONTAINER)_$(OF_SDK_IN_CONTAINER),1_)
+
+app.elf: SDK_FORCE
+	@bash $(SDK_CONTAINER) make app.elf
+SDK_FORCE:
+.PHONY: SDK_FORCE
+
+else
+
 app.elf: $(ALL_OBJS)
 	@echo "LD  $@ ($(words $(ALL_OBJS)) objects)"
 	$(CXX) $(LDFLAGS) -o $@ $(CRT) $(ALL_OBJS) $(LIBS)
-	@$(SIZE) $@
+	@$(SIZE) $@ 2>/dev/null || true
+
+endif
 
 all: app.elf release
 

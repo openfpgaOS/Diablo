@@ -19,6 +19,10 @@
 #include "utils/display.h"
 #include "utils/sdl_compat.h"
 
+#if defined(OPENFPGAOS) && defined(OF_DIABLO_GPU)
+extern "C" void of_gpub_upload_translucency(const uint8_t *table);
+#endif
+
 namespace devilution {
 
 std::array<SDL_Color, 256> logical_palette;
@@ -111,6 +115,13 @@ void GenerateBlendedLookupTable(std::array<SDL_Color, 256> &palette, int skipFro
 			paletteTransparencyLookupBlack16[index] = paletteTransparencyLookup[0][i] | (paletteTransparencyLookup[0][j] << 8);
 		}
 	}
+#endif
+
+#if defined(OPENFPGAOS) && defined(OF_DIABLO_GPU)
+	// [of] Mirror the blend table into GPU translucency RAM. Color cycling
+	// rotates the CPU copy per tick without re-uploading; that only matters
+	// once translucent surfaces render on the GPU.
+	of_gpub_upload_translucency(&paletteTransparencyLookup[0][0]);
 #endif
 }
 

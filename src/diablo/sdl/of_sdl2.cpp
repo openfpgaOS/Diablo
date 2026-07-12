@@ -36,6 +36,12 @@ extern "C" void of_platform_init(void);
 extern "C" const char *of_platform_base_path(void);
 extern "C" const char *of_platform_pref_path(void);
 
+#ifdef OF_DIABLO_GPU
+/* GPU bring-up bridge (platform/of_gpu_bridge.c). */
+extern "C" int of_gpub_ready(void);
+extern "C" void of_gpub_smoke_test(void);
+#endif
+
 /* ===================================================================== */
 /* Internal surface metadata (surface->map points here)                   */
 /* ===================================================================== */
@@ -62,23 +68,28 @@ const char *SDL_GetError(void) { return g_error; }
 void SDL_ClearError(void) { g_error[0] = 0; }
 int  SDL_Error(int code) { (void)code; return -1; }
 
-void SDL_LogMessageV(int cat, SDL_LogPriority pri, const char *fmt, va_list ap) {
-	(void)cat; (void)pri;
-	vprintf(fmt, ap);
-	printf("\n");
-}
+/* Priority filter, matching real SDL's default: INFO and up print, the
+ * VERBOSE/DEBUG firehose (DevilutionX's LoggedFStream traces every
+ * fopen/fread/fseek) stays off the serial console unless the app raises
+ * it via SDL_LogSetAllPriority. */
+static SDL_LogPriority g_log_priority = SDL_LOG_PRIORITY_INFO;
 static void of_log(const char *fmt, va_list ap) { vprintf(fmt, ap); printf("\n"); }
+void SDL_LogMessageV(int cat, SDL_LogPriority pri, const char *fmt, va_list ap) {
+	(void)cat;
+	if (pri < g_log_priority) return;
+	of_log(fmt, ap);
+}
 void SDL_Log(const char *fmt, ...)            { va_list a; va_start(a,fmt); of_log(fmt,a); va_end(a); }
-void SDL_LogVerbose(int c,const char*f,...)   { (void)c; va_list a; va_start(a,f); of_log(f,a); va_end(a); }
-void SDL_LogDebug(int c,const char*f,...)     { (void)c; va_list a; va_start(a,f); of_log(f,a); va_end(a); }
+void SDL_LogVerbose(int c,const char*f,...)   { (void)c; if (SDL_LOG_PRIORITY_VERBOSE < g_log_priority) return; va_list a; va_start(a,f); of_log(f,a); va_end(a); }
+void SDL_LogDebug(int c,const char*f,...)     { (void)c; if (SDL_LOG_PRIORITY_DEBUG < g_log_priority) return; va_list a; va_start(a,f); of_log(f,a); va_end(a); }
 void SDL_LogInfo(int c,const char*f,...)      { (void)c; va_list a; va_start(a,f); of_log(f,a); va_end(a); }
 void SDL_LogWarn(int c,const char*f,...)      { (void)c; va_list a; va_start(a,f); of_log(f,a); va_end(a); }
 void SDL_LogError(int c,const char*f,...)     { (void)c; va_list a; va_start(a,f); of_log(f,a); va_end(a); }
 void SDL_LogCritical(int c,const char*f,...)  { (void)c; va_list a; va_start(a,f); of_log(f,a); va_end(a); }
-void SDL_LogMessage(int c,SDL_LogPriority p,const char*f,...){ (void)c;(void)p; va_list a; va_start(a,f); of_log(f,a); va_end(a); }
+void SDL_LogMessage(int c,SDL_LogPriority p,const char*f,...){ (void)c; if (p < g_log_priority) return; va_list a; va_start(a,f); of_log(f,a); va_end(a); }
 void SDL_LogSetPriority(int c, SDL_LogPriority p) { (void)c; (void)p; }
-SDL_LogPriority SDL_LogGetPriority(int c) { (void)c; return SDL_LOG_PRIORITY_INFO; }
-void SDL_LogSetAllPriority(SDL_LogPriority p) { (void)p; }
+SDL_LogPriority SDL_LogGetPriority(int c) { (void)c; return g_log_priority; }
+void SDL_LogSetAllPriority(SDL_LogPriority p) { g_log_priority = p; }
 
 /* ===================================================================== */
 /* stdinc helpers                                                         */
@@ -132,6 +143,14 @@ int SDL_InitSubSystem(Uint32 flags) {
 		    rc, (unsigned)got.width, (unsigned)got.height, (unsigned)got.stride,
 		    c ? (unsigned)(c->heap_size / 1024u) : 0u,
 		    c ? (unsigned)(c->sdram_size / (1024u * 1024u)) : 0u);
+#ifdef OF_DIABLO_GPU
+		/* GPU bring-up (make GPU=1): probe + feature report, then a
+		 * fenced clear_rect + colormap-span smoke test into the current
+		 * draw buffer. Draws before the first game frame; the game
+		 * overwrites it. See platform/of_gpu_bridge.c. */
+		if (of_gpub_ready())
+			of_gpub_smoke_test();
+#endif
 	}
 	return 0;
 }

@@ -17,7 +17,7 @@
  *
  * BRAM hot path: mark functions with OF_FASTTEXT (or OF_FASTDATA /
  * OF_FASTRODATA) -- see api/of_fastram.h. Marked symbols land in BRAM
- * (~23 KB, zero wait state). The OS ELF loader detects BRAM-targeted
+ * (14 KB, zero wait state -- APP_BRAM below). The OS ELF loader detects BRAM-targeted
  * PT_LOAD segments and copies them at load time. Apps that don't use
  * the macros are unaffected -- the BRAM section stays empty and no
  * extra PT_LOAD is generated.
@@ -115,13 +115,24 @@ SECTIONS {
     } > SDRAM
 
     /* BRAM hot code: VMA in BRAM, LMA stored in ELF after SDRAM sections.
-     * Empty for apps that don't use OF_FASTTEXT -- no PT_LOAD generated. */
-    .app_fasttext : {
+     * Empty for apps that don't use OF_FASTTEXT -- no PT_LOAD generated.
+     *
+     * SUBALIGN(8): the SDK compiles everything with -falign-functions=64
+     * so SDRAM-resident code starts on I$-line boundaries — but APP_BRAM
+     * is an UNCACHED region (PMA main=0; fetches bypass the I$ entirely),
+     * so 64-byte alignment here is pure padding: with -ffunction-sections
+     * every fasttext function is its own 64-aligned input section and the
+     * region was losing hundreds of bytes to inter-function gaps (Duke3D
+     * overflowed APP_BRAM by 80 bytes on nothing but padding).  Force
+     * input-section alignment down to 8 (safe for RVC code and any
+     * 8-byte-aligned rodata/data; placement-only, zero perf effect in an
+     * uncached region). */
+    .app_fasttext : SUBALIGN(8) {
         *(.app_fasttext*)
         *(.app_fastrodata*)
     } > APP_BRAM AT> SDRAM
 
-    .app_fastdata : {
+    .app_fastdata : SUBALIGN(8) {
         *(.app_fastdata*)
     } > APP_BRAM AT> SDRAM
 

@@ -344,6 +344,15 @@ push:
 	@# game README/GETTING_STARTED) — only seed them if absent.
 	@[ -f "$(DEST)/README.md" ] || cp -f README.md "$(DEST)/README.md"
 	@[ -f "$(DEST)/GETTING_STARTED.md" ] || { [ -f GETTING_STARTED.md ] && cp -f GETTING_STARTED.md "$(DEST)/GETTING_STARTED.md"; } || true
+	@# Container tooling MUST travel with sdk.mk: its default build path
+	@# re-execs make through tools/sdk-container.sh, and the wrapper's
+	@# OF_SDK_IN_CONTAINER export is what stops that recursion inside the
+	@# container.  A repo with a new sdk.mk and an old wrapper can't build.
+	@mkdir -p "$(DEST)/tools/docker"
+	@cp -f tools/sdk-container.sh "$(DEST)/tools/sdk-container.sh"
+	@chmod +x "$(DEST)/tools/sdk-container.sh"
+	@cp -f tools/oci.sh "$(DEST)/tools/oci.sh"
+	@cp -f tools/docker/Dockerfile.firmware "$(DEST)/tools/docker/Dockerfile.firmware"
 	@mkdir -p "$(DEST)/runtime/pocket"
 	@cp -f runtime/pocket/os.bin "$(DEST)/runtime/pocket/os.bin"
 	@# loader.bin is the target-generic chip32 variant selector (NOT a
@@ -351,7 +360,7 @@ push:
 	@# stale loader that ignores VARIANT=os30 and always boots os25.
 	@cp -f runtime/pocket/loader.bin "$(DEST)/runtime/pocket/loader.bin"
 	@cp -f runtime/bank.ofsf     "$(DEST)/runtime/bank.ofsf"
-	@printf "  skipped: runtime/pocket/{os25.rbf_r, os30.rbf_r, ap_core.sof}\n"
+	@printf "  skipped: runtime/pocket/{*.rbf_r, ap_core.sof}\n"
 
 # ── Build host tools ────────────────────────────────────────────────
 tools:

@@ -15,6 +15,10 @@
 #include "engine/points_in_rectangle_range.hpp"
 #include "player.h"
 
+#if defined(OPENFPGAOS) && defined(OF_DIABLO_GPU)
+extern "C" void of_gpub_upload_light_tables(const uint8_t *tables, unsigned levels);
+#endif
+
 namespace devilution {
 
 std::array<bool, MAXVISION> VisionActive;
@@ -407,6 +411,12 @@ void MakeLightTable()
 			}
 		}
 	}
+
+#if defined(OPENFPGAOS) && defined(OF_DIABLO_GPU)
+	// [of] Mirror the freshly built light tables into GPU palookup slot 0 so
+	// GPU spans can shade with the same tables the CPU renderer uses.
+	of_gpub_upload_light_tables(LightTables[0].data(), LightTables.size());
+#endif
 }
 
 #ifdef _DEBUG
