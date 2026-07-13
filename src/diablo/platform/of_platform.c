@@ -19,9 +19,11 @@
  *   5  devilutionx.mpq   (DevilutionX's own assets -- REQUIRED, not on the CD)
  *   6  fonts.mpq         (extra fonts -- optional)
  *   7  hellfire.mpq      (Hellfire expansion -- optional)
- *   --  hfmonk/hfmusic/hfvoice.mpq: NO readable slot (ids 0-19 only;
- *       4-7 are taken). Not loadable here -- Hellfire mode is incomplete.
+ *   8  stash.sv/.hsv     (shared stash -- nonvolatile)
+ *   9  diablo.ini        (settings -- nonvolatile; see the note below, the
+ *                         Hellfire instance binds this slot to hellfire.ini)
  *   10-19 single_0..9.sv (single-player saves -- nonvolatile)
+ *   20-22 hfmonk/hfmusic/hfvoice.mpq (Hellfire expansion data)
  */
 #include "of.h"
 
@@ -35,6 +37,24 @@ __attribute__((constructor)) static void of_diablo_banner(void)
 }
 
 static int g_done;
+
+/* Bind `name` -> `slot` unless the kernel registry already resolves `name`.
+ *
+ * The registry (kernel syscall.c file_slot_register) is an APPEND-ONLY
+ * 32-entry table: it does not de-duplicate by name, and once full it returns
+ * silently. Boot discovery (filesystem_init -> dir_probe_slots) already binds
+ * every filename the instance JSON declares -- 21 of them in the Hellfire
+ * layout -- so re-registering blindly is what overflowed the table and
+ * dropped the bindings at the tail. On Pocket of_file_slot_find() is exactly
+ * a registry lookup (of_file_resolve_name() returns -1 here), so this is an
+ * accurate "already bound?" test rather than a guess. */
+static void bind_if_unbound(uint32_t slot, const char *name)
+{
+	uint32_t bound;
+	if (of_file_slot_find(name, &bound) == 0)
+		return;
+	of_file_slot_register(slot, name);
+}
 
 void of_platform_init(void)
 {
@@ -53,21 +73,35 @@ void of_platform_init(void)
 		of_video_set_mode(&want);
 	}
 
-	/* Read-only data slots. The kernel auto-discovers APF filenames at
-	 * boot; registering here makes fopen() resolution explicit and
-	 * order-independent. */
-	of_file_slot_register(4, "DIABDAT.mpq");
-	of_file_slot_register(5, "devilutionx.mpq");
-	of_file_slot_register(6, "fonts.mpq");
-	of_file_slot_register(7, "hellfire.mpq");
-	/* Hellfire monk/music/voice MPQs at ids 20-22. The OS datatable scan
-	 * (targets/pocket/file.c datatable_entry_scan_for_slot) resolves ids
-	 * beyond the old 0-19 hardcoded map, and the APF 32-slot cap leaves room,
-	 * so these load like any other read-only data slot. Hellfire mode requires
-	 * all three (see init.cpp:357) — without them DevilutionX quits. */
-	of_file_slot_register(20, "hfmonk.mpq");
-	of_file_slot_register(21, "hfmusic.mpq");
-	of_file_slot_register(22, "hfvoice.mpq");
+	/* Settings FIRST -- this is the one binding the game cannot do without
+	 * and the one the Hellfire instance never supplies.
+	 *
+	 * DevilutionX always opens "diablo.ini": options.cpp GetIniPath() hard-
+	 * codes that name in BOTH modes. The Hellfire instance JSON, however,
+	 * binds slot 9 to "hellfire.ini", so boot discovery never registers
+	 * "diablo.ini" there and it has to come from here. It used to be
+	 * registered last, past the point where the 32-entry registry had
+	 * filled up, so the binding was silently dropped and every settings
+	 * write died with ENOENT ("Failed to write ini file to diablo.ini: No
+	 * such file or directory") -- settings never persisted in Hellfire.
+	 * Diablo mode was unaffected because its instance binds "diablo.ini"
+	 * directly, which is why this survived testing.
+	 *
+	 * A write needs a REGISTRY binding specifically: Pocket's
+	 * of_file_resolve_name() and of_file_config_slot() both return -1, and
+	 * sys_openat's remaining fallbacks only match ".sav"-style names, so an
+	 * unbound writable name cannot be opened at all. */
+	bind_if_unbound(9, "diablo.ini");
+
+	/* Read-only data slots are deliberately NOT registered here.
+	 *
+	 * When the file is present, boot discovery has already bound it and a
+	 * call here is a no-op. When it is absent, binding the name is worse than
+	 * useless: the slot has no file, so sys_openat's size check rejects the
+	 * open with ENOENT anyway -- we would only have spent one of the 32
+	 * registry entries to arrive at the same answer. In the Diablo layout
+	 * that reclaims four entries (hellfire + the three hf*.mpq) which the
+	 * save aliases below genuinely need. */
 
 	/* Single-player save slots (nonvolatile, slots 10-19).
 	 *
@@ -85,30 +119,50 @@ void of_platform_init(void)
 	 * fire. The instance JSON previously bound diablo.ini to slot 2 (the
 	 * read-only OS Config slot) -- that was the "Permission denied" on
 	 * SaveIni; it now binds slot 9. Settings persist when the Pocket's
-	 * native save-on-exit writeback runs (menu exit / sleep). */
+	 * native save-on-exit writeback runs (menu exit / sleep).
+	 *
+	 * DevilutionX picks the save extension from the GAME MODE, not from the
+	 * instance (pfile.cpp GetSavePath): ".sv" for Diablo, ".hsv" for
+	 * Hellfire. Those two normally agree, but they are decided independently
+	 * and CAN disagree: init.cpp:341 sets gbIsHellfire only if hellfire.mpq
+	 * actually loads, so a Hellfire instance whose expansion MPQs fail to
+	 * load runs as Diablo and opens ".sv" while the instance bound ".hsv".
+	 *
+	 * Both spellings are therefore registered. An earlier version of this
+	 * file registered only the instance's own extension to save table
+	 * entries; that produced exactly the failure above -- `single_0.sv`
+	 * unbound, `fopen(..., "ab")` -> ENOENT, MpqWriter disabling the save
+	 * subsystem, then a hard app_fatal("Unable to open archive") out of
+	 * pfile_read_player_from_save. Never trade this insurance for table
+	 * space: bind_if_unbound already makes the matching spelling free
+	 * (discovery bound it), so the real cost is only the 10 aliases for the
+	 * extension this run does not use.
+	 *
+	 * Order matters. Registration is append-only and silently stops at 32,
+	 * so the entries are laid out most-critical-first: the ini above, then
+	 * the hero slots here, then the stash last. If anything is dropped it is
+	 * the tail -- and the tail is the opposite-extension stash alias, the one
+	 * name in this whole list that no build ever opens. */
 	for (int i = 0; i < 10; i++) {
 		char name[24];
 		snprintf(name, sizeof name, "single_%d.sv", i);
-		of_file_slot_register(10 + i, name);
-		/* Hellfire names its saves .hsv; same slots, separate SD files
-		 * (the Hellfire instance JSON binds single_N.hsv). Registering
-		 * both is safe: each game only ever opens its own extension. */
+		bind_if_unbound(10 + i, name);
 		snprintf(name, sizeof name, "single_%d.hsv", i);
-		of_file_slot_register(10 + i, name);
+		bind_if_unbound(10 + i, name);
 	}
-	of_file_slot_register(9, "diablo.ini");
-	of_file_slot_register(9, "hellfire.ini"); /* Hellfire instance binds this name */
 
 	/* Shared stash (DevilutionX GetStashSavePath -> "stash.sv" / "stash.hsv").
 	 * Previously UNREGISTERED: every stash save silently failed (MpqWriter's
 	 * "r+b" open found no slot, valid_=false) and the stash reset each boot.
 	 * Slot 8 is the otherwise-unused nonvolatile window at 0x20380000
-	 * (data.json binds its SD file). Same dual .sv/.hsv registration as the
-	 * hero slots: each game only ever opens its own extension.
+	 * (data.json binds its SD file). Both spellings for the same reason as
+	 * the hero slots, and LAST because this is the one pair that can be
+	 * safely lost to a full table: the mode-matching name is already bound by
+	 * discovery, and the other is never opened.
 	 * NOTE: shareware ("stash_spawn.sv") and multiplayer ("multi_N.sv")
 	 * names remain unregistered -- those modes have no slots on this core. */
-	of_file_slot_register(8, "stash.sv");
-	of_file_slot_register(8, "stash.hsv");
+	bind_if_unbound(8, "stash.sv");
+	bind_if_unbound(8, "stash.hsv");
 
 	/* The MPQs are opened directly by basename via the slot service. */
 }

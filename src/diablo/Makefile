@@ -21,7 +21,13 @@ RUNTIME  := $(ROOT)/runtime
 GAME_ASSETS = $(wildcard *.dat *.bin *.cfg)
 
 # ── Toolchain ────────────────────────────────────────────────────────
-CROSS   ?= $(shell which riscv64-unknown-elf-g++ >/dev/null 2>&1 && echo riscv64-unknown-elf- || echo riscv64-elf-)
+# Prefer xPack's riscv-none-elf- (the containerized toolchain, and the only
+# common bare-metal prefix that ships libstdc++/libsupc++ for C++); fall back
+# to the newlib riscv64-*-elf- prefixes on hosts that have them.
+CROSS   ?= $(shell \
+	if   command -v riscv-none-elf-g++       >/dev/null 2>&1; then echo riscv-none-elf-; \
+	elif command -v riscv64-unknown-elf-g++  >/dev/null 2>&1; then echo riscv64-unknown-elf-; \
+	else echo riscv64-elf-; fi)
 CC      := $(CROSS)gcc
 CXX     := $(CROSS)g++
 SIZE    := $(CROSS)size
@@ -128,7 +134,8 @@ BZIP2_SRCS := $(wildcard $(TP)/bzip2/*.c)
 # video degrades instead of aborting.
 SMK_SRCS  := $(wildcard $(TP)/libsmackerdec/src/*.cpp)
 PKW_SRCS  := $(DX)/3rdParty/PKWare/explode.cpp $(DX)/3rdParty/PKWare/implode.cpp
-LOC_CXX   := $(CURDIR)/sdl/of_sdl2.cpp $(CURDIR)/sdl/of_aulib.cpp $(CURDIR)/platform/devx_stubs.cpp
+LOC_CXX   := $(CURDIR)/sdl/of_sdl2.cpp $(CURDIR)/sdl/of_aulib.cpp $(CURDIR)/platform/devx_stubs.cpp \
+             $(CURDIR)/platform/of_oom.cpp
 LOC_C     := $(CURDIR)/platform/of_libc_compat.c $(CURDIR)/platform/zlib_bzip2_stub.c \
              $(CURDIR)/platform/of_platform.c $(SDK)/of_init.c
 ifeq ($(GPU),1)
@@ -201,20 +208,26 @@ $(OBJDIR)/%.o: $(ROOT)/% $(CURDIR)/Makefile
 	  *.c)        echo "CC  $*"; $(CC)  $(CFLAGS)  -c -o $@ "$<" ;; \
 	esac
 
-# ── Container build guard (mirrors sdk.mk) — HOST BY DEFAULT here ───
-# ⚠ Diablo is the ONE documented host-toolchain exception among the game
-# repos: DevilutionX links the toolchain's REAL libstdc++/libsupc++ (and
-# needs the C++ standard headers), and Ubuntu's gcc-riscv64-unknown-elf —
-# the openfpgaos-firmware container toolchain — ships NO bare-metal C++
-# runtime at all (`#include <string>` fails; no rv32 libstdc++.a exists
-# as any Ubuntu package; the *-riscv64-cross packages are linux-gnu).
-# Every other repo builds freestanding C++ (-nostdinc, of_cxxabi shim)
-# and containerizes fine.  Flip USE_SDK_CONTAINER to default 1 here as
-# soon as the shared image gains a C++-runtime-equipped bare-metal
-# toolchain (e.g. xPack riscv-none-elf-gcc) — the delegate plumbing below
-# is already in place.
-USE_SDK_CONTAINER ?= 0
+# ── Container build guard (mirrors sdk.mk) — CONTAINERIZED BY DEFAULT ──
+# Diablo is the ONE game repo that can't reuse the shared openfpgaos-firmware
+# image: DevilutionX is C++ and statically links the toolchain's REAL
+# libstdc++/libsupc++ (and needs the C++ standard headers), whereas that image
+# (and Ubuntu's gcc-riscv64-unknown-elf, and Homebrew's riscv64-elf-gcc) ships
+# NO bare-metal C++ runtime — `#include <string>` fails and no rv32 libstdc++.a
+# exists to link. So Diablo gets its OWN image (tools/docker/Dockerfile.diablo)
+# built around the xPack riscv-none-elf-gcc toolchain, which carries newlib +
+# a full libstdc++/libsupc++ multilib. SDK_IMG/SDK_DOCKERFILE point the shared
+# sdk-container.sh wrapper at that image (it auto-builds on first use).
+#
+# Result: `make build` Just Works on any host with Docker (or Apple
+# `container`) and no hand-installed RISC-V toolchain — the reason the build
+# previously required a bespoke host setup and broke on stock macOS make.
+# Escape hatch: USE_SDK_CONTAINER=0 builds on the host toolchain (needs a
+# C++-capable bare-metal riscv-none-elf-/riscv64-*-elf- GCC on PATH).
+USE_SDK_CONTAINER ?= 1
 SDK_CONTAINER    ?= $(ROOT)/tools/sdk-container.sh
+export SDK_IMG        ?= openfpgaos-diablo
+export SDK_DOCKERFILE ?= $(ROOT)/tools/docker/Dockerfile.diablo
 ifeq ($(USE_SDK_CONTAINER)_$(OF_SDK_IN_CONTAINER),1_)
 
 app.elf: SDK_FORCE

@@ -178,6 +178,31 @@ static OF_FASTDATA uint8_t  prev_vol_r[SMP_MAX_VOICES];
 /* Voices pending steal (waiting for hardware fade-out) */
 #define STEAL_PENDING -2
 
+/* Ticks a STEAL_PENDING voice waits before voice_cleanup_stolen deactivates
+ * its HW voice.  CTRL=0 is an instant cut, so the fade started by
+ * voice_force_off (vol 0 @ ramp rate 8 = ~0.67 ms full-scale) must have
+ * finished first.  force_off can fire at any point inside a tick period, so
+ * ">= 2 ticks since stamp" guarantees at least one full 1 ms tick of fade
+ * time.  The old "clean up on the very next tick" gave as little as ~0 ms
+ * when force_off ran just before the tick fired -- deactivating mid-fade
+ * with an audible residual (a click ~1/3 of the time per steal). */
+#define STEAL_FADE_TICKS 2
+
+/* Ticks a just-abandoned HW voice (voice_reclaim fade-and-abandon) stays
+ * protected from smp_voice_reap_orphans().  Reap runs from the main-thread
+ * MIDI pump as often as every ~1 ms and hard-stops (CTRL=0) any MUSIC voice
+ * the synth no longer owns -- which is exactly what an abandoned fader is.
+ * Without a grace window the reap races the fade and cuts it mid-ramp,
+ * re-introducing the steal click the fade exists to prevent.  Must exceed
+ * the reclaim fade (ramp rate 4 -> 255/4 = 64 samples ~ 1.33 ms). */
+#define SMP_RECLAIM_GRACE_TICKS 6
+
+/* Per-HW-voice grace deadlines (tick_counter values).  Indexed by hw_index;
+ * written from voice_reclaim (main thread), read from smp_voice_reap_orphans
+ * (main thread) against the ISR-incremented tick_counter -- 32-bit reads are
+ * atomic here, and signed wrap-around compare handles counter wrap. */
+static OF_FASTDATA uint32_t orphan_grace_until[OF_MIXER_MAX_VOICES];
+
 /* Minimum envelope level before we consider it done */
 #define ENV_FLOOR 0x100
 
@@ -417,7 +442,31 @@ static int voice_drop_if_stale(smp_voice_t *v)
 static void voice_reclaim(int idx)
 {
     smp_voice_t *v = &voices[idx];
-    voice_stop_hw_if_owned(v);
+    /* Declick the steal.  voice_stop_hw_if_owned() -> of_mixer_stop_h() cuts the
+     * voice in a single sample, which clicks whenever the stolen voice is
+     * still audible -- the polyphony-saturation case in dense SCI scores (KQ6).
+     * Instead fade to silence and ABANDON the HW voice: this SW slot is
+     * reused synchronously for the new note, so the handle can't be parked in
+     * STEAL_PENDING.  The faded HW voice ends harmlessly -- a one-shot walks off
+     * its now-silent end; a looping voice idles at vol 0 until
+     * smp_voice_reap_orphans() stops it after the grace window below (a hard
+     * stop at vol 0 is click-free).  Note the HW slot stays allocated until
+     * then: MUSIC voices all share priority, so at total HW saturation a new
+     * alloc fails (dropped note) rather than stealing a fader -- silent, not
+     * clicky, and rare now that SMP_MAX_VOICES gives real polyphony headroom. */
+    if (voice_hw_owned_by_music(v)) {
+        of_mixer_set_vol_lr_h(v->mixer_voice, 0, 0);
+        of_mixer_set_volume_ramp_h(v->mixer_voice, 4);
+        /* Protect the abandoned fader from smp_voice_reap_orphans() until the
+         * ramp has reached silence -- reap runs every MIDI pump (~1 ms) and a
+         * CTRL=0 there mid-fade is the very click this fade prevents.  Rate 4
+         * (~1.33 ms full-scale) is gentler than the old 16 (~0.33 ms); the
+         * abandoned voice has no cleanup deadline, so the only cost is the HW
+         * slot staying busy a millisecond longer. */
+        if (v->hw_index < OF_MIXER_MAX_VOICES)
+            orphan_grace_until[v->hw_index] =
+                tick_counter + SMP_RECLAIM_GRACE_TICKS;
+    }
     v->mixer_voice = OF_MIXER_HANDLE_INVALID;
     v->active = 0;
 }
@@ -484,16 +533,15 @@ static int voice_alloc(void)
 }
 
 /* Schedule a voice for shutdown without reusing its slot.  Used by
- * kill_exclusive_class — the new note allocates a fresh slot and the
- * old one fades out via voice_cleanup_stolen on the next tick.
+ * kill_exclusive_class, smp_voice_all_off, and the ENV_DONE path in
+ * smp_voice_tick — the slot fades out and voice_cleanup_stolen
+ * deactivates it once STEAL_FADE_TICKS have passed.
  *
- * Ramp rate must be high enough that the HW vol_lr reaches 0 BEFORE
- * voice_cleanup_stolen fires 1 ms later and snaps vol_lr/ctrl to 0
- * (otherwise the snap from non-zero to 0 is an audible click).  At
- * 48 kHz audio, 1 ms = 48 ramp steps; rate=16 → fade in 16 samples
- * (~0.33 ms), well under the 1 ms cleanup gap.  Old rate=4 needed
- * 64 samples (~1.33 ms) to fade — finished AFTER cleanup, leaving
- * ~63 of 255 LSBs to be snapped, ~25% full-scale step, audible. */
+ * v->age is re-stamped as the fade-start tick: the field's only other
+ * use (steal pass 2 ordering) reads it exclusively from live ENV_DONE
+ * voices, and STEAL_PENDING slots are skipped by every steal pass, so
+ * reusing it here is safe.  Ramp rate 8 = ~0.67 ms full-scale, always
+ * finished before the >= 2-tick cleanup deadline. */
 static void voice_force_off(int idx)
 {
     smp_voice_t *v = &voices[idx];
@@ -501,8 +549,17 @@ static void voice_force_off(int idx)
         return;
 
     of_mixer_set_vol_lr_h(v->mixer_voice, 0, 0);
-    of_mixer_set_volume_ramp_h(v->mixer_voice, 16);
+    of_mixer_set_volume_ramp_h(v->mixer_voice, 8);
+    /* Stamp the fade start BEFORE marking STEAL_PENDING: force_off runs from
+     * the main thread too (kill_exclusive_class, all_off), and if the 1 kHz
+     * ISR fires between the two stores it must not see STEAL_PENDING paired
+     * with a stale note-on age (elapsed would look huge -> instant deactivate
+     * mid-fade).  Compiler barrier keeps the store order on this in-order,
+     * single-core target. */
+    v->age = tick_counter;
+    __asm__ volatile("" ::: "memory");
     v->active = STEAL_PENDING;
+    __asm__ volatile("" ::: "memory");
     steal_pending_count++;
 }
 
@@ -511,14 +568,24 @@ static void voice_cleanup_stolen(void)
     /* Common case: nothing pending — skip the full scan. */
     if (steal_pending_count == 0)
         return;
+    /* Recount rather than decrement: the ++ in voice_force_off is a plain
+     * RMW that the main thread and this ISR can race, so the count is only
+     * a hint.  Rebuilding it from what the scan actually saw self-heals any
+     * drift; a voice marked STEAL_PENDING is always counted here because
+     * force_off marks the slot before bumping the hint. */
+    uint8_t still_pending = 0;
     for (int i = 0; i < SMP_MAX_VOICES; i++) {
-        if (voices[i].active == STEAL_PENDING) {
+        if (voices[i].active != STEAL_PENDING)
+            continue;
+        if ((uint32_t)(tick_counter - voices[i].age) >= STEAL_FADE_TICKS) {
             voice_stop_hw_if_owned(&voices[i]);
             voices[i].active = 0;
             voices[i].mixer_voice = OF_MIXER_HANDLE_INVALID;
+        } else {
+            still_pending++;
         }
     }
-    steal_pending_count = 0;
+    steal_pending_count = still_pending;
 }
 
 /* ------------------------------------------------------------------ */
@@ -672,6 +739,11 @@ void smp_voice_init(void)
         voices[i].mixer_voice = OF_MIXER_HANDLE_INVALID;
     }
 
+    /* tick_counter restarts at 0 below; stale grace deadlines from a prior
+     * session would otherwise shield orphans for seconds. */
+    for (int i = 0; i < OF_MIXER_MAX_VOICES; i++)
+        orphan_grace_until[i] = 0;
+
     for (int i = 0; i < 16; i++) {
         ch_volume[i]     = 100;
         ch_expression[i] = 127;
@@ -775,6 +847,13 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
 
 
     v->mixer_voice = mhv;
+    {
+        /* Cache the HW voice index now, while the handle is fresh and valid.
+         * smp_voice_reap_orphans() uses it to recognise voices we still own
+         * even after the handle's generation later goes stale. */
+        int hwi = of_mixer_handle_voice(mhv);
+        v->hw_index = (hwi >= 0 && hwi < OF_MIXER_MAX_VOICES) ? (uint8_t)hwi : 0xFF;
+    }
     of_mixer_set_rate_raw_h(mhv, v->base_rate_fp16);
     stat_rate_writes++;
 
@@ -943,9 +1022,22 @@ void smp_voice_tick(void)
         }
 
         if (v->vol_env.stage == ENV_DONE) {
-            voice_stop_hw_if_owned(v);
-            v->active = 0;
-            v->mixer_voice = OF_MIXER_HANDLE_INVALID;
+            /* The DONE transition happens BEFORE this tick's volume write, so
+             * the HW is still sitting at the LAST tick's level — for short
+             * releases (rate = level/ticks) that residual is level/ticks of
+             * full scale, several audible LSBs.  A hard stop here steps that
+             * residual to zero in one sample: the "subtle click on rapid
+             * notes" (staccato SCI scores — every note-off cut its tail).
+             * Only hard-stop when the last written volume was already 0;
+             * otherwise fade first and let voice_cleanup_stolen deactivate
+             * after STEAL_FADE_TICKS. */
+            if (prev_vol_l[i] == 0 && prev_vol_r[i] == 0) {
+                voice_stop_hw_if_owned(v);
+                v->active = 0;
+                v->mixer_voice = OF_MIXER_HANDLE_INVALID;
+            } else {
+                voice_force_off(i);
+            }
             continue;
         }
 
@@ -1080,18 +1172,21 @@ void smp_voice_update_chorus_send(int midi_ch, int send_0_127)
 
 void smp_voice_all_off(int midi_ch)
 {
+    /* CC120/123 land mid-song on SCI cue changes; a hard stop here cuts
+     * every still-audible voice at once (chorus of clicks).  Fade via
+     * voice_force_off instead — cleanup deactivates after the ramp. */
     for (int i = 0; i < SMP_MAX_VOICES; i++) {
         smp_voice_t *v = &voices[i];
-        if (v->active && v->active != STEAL_PENDING && v->midi_ch == midi_ch) {
-            voice_stop_hw_if_owned(v);
-            v->active = 0;
-            v->mixer_voice = OF_MIXER_HANDLE_INVALID;
-        }
+        if (v->active && v->active != STEAL_PENDING && v->midi_ch == midi_ch)
+            voice_force_off(i);
     }
 }
 
 void smp_voice_all_off_global(void)
 {
+    /* Teardown/reset path: hard stop is intentional (the 1 kHz tick may be
+     * about to stop, so a deferred STEAL_PENDING cleanup might never run).
+     * This also clears any STEAL_PENDING slots, so reset the hint. */
     for (int i = 0; i < SMP_MAX_VOICES; i++) {
         smp_voice_t *v = &voices[i];
         if (v->active) {
@@ -1100,6 +1195,48 @@ void smp_voice_all_off_global(void)
             v->mixer_voice = OF_MIXER_HANDLE_INVALID;
         }
     }
+    steal_pending_count = 0;
+}
+
+int smp_voice_reap_orphans(void)
+{
+    /* Set of HW mixer-voice indices the synth still owns.  v->active is truthy
+     * for both live (==1) and STEAL_PENDING (fading-out) voices, so neither is
+     * mistaken for an orphan.  If any live voice has an unknown HW index (e.g.
+     * firmware without mixer_handle_voice), bail: we cannot build a trustworthy
+     * owned-set, and reaping then risks stopping a voice we actually own. */
+    uint32_t owned = 0;
+    for (int i = 0; i < SMP_MAX_VOICES; i++) {
+        smp_voice_t *v = &voices[i];
+        if (!v->active)
+            continue;
+        if (v->hw_index >= OF_MIXER_MAX_VOICES)
+            return 0;
+        owned |= (1u << v->hw_index);
+    }
+
+    /* Any MUSIC-group HW voice still sounding that the synth no longer owns is
+     * an orphan: smp_voice dropped its slot (stale handle generation) without
+     * stopping the hardware, so a looping sample drones on.  MUSIC group is
+     * exclusively this synth's, so stopping an unowned MUSIC voice can only
+     * silence a leaked synth voice. */
+    int reaped = 0;
+    for (int i = 0; i < OF_MIXER_MAX_VOICES; i++) {
+        if (owned & (1u << i))
+            continue;
+        /* Skip voices voice_reclaim just abandoned: they are mid-fade and a
+         * CTRL=0 now would cut the ramp audibly.  Once the grace window
+         * passes they are at vol 0 and the stop is click-free.  Signed
+         * compare handles tick_counter wrap. */
+        if ((int32_t)(orphan_grace_until[i] - tick_counter) > 0)
+            continue;
+        if (of_mixer_voice_active(i) &&
+            of_mixer_voice_group(i) == OF_MIXER_GROUP_MUSIC) {
+            of_mixer_stop(i);
+            reaped++;
+        }
+    }
+    return reaped;
 }
 
 void smp_voice_set_master_volume(int vol)
@@ -1144,5 +1281,6 @@ void smp_voice_update_chorus_send(int ch, int v)       { (void)ch; (void)v; }
 void smp_voice_all_off(int ch)                         { (void)ch; }
 void smp_voice_all_off_global(void)                    {}
 void smp_voice_set_master_volume(int vol)              { (void)vol; }
+int  smp_voice_reap_orphans(void)                      { return 0; }
 
 #endif /* OF_PC */

@@ -29,6 +29,10 @@ set(tests
   lighting_test
   math_test
   missiles_test
+  monster_budget_test
+  monster_gfx_bytes_test
+  save_inspect_test
+  make_lair_save_test
   pack_test
   path_test
   player_test

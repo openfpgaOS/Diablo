@@ -71,6 +71,8 @@ static const of_video_mode_t g_video_modes[] = {
 /* ---- Input state ---- */
 static of_input_state_t g_input[2];
 static uint32_t g_prev_buttons[2];
+static uint16_t g_prev_mouse_buttons;
+static uint16_t g_mouse_report_counter;
 
 /* ---- Audio state ---- */
 static SDL_AudioDeviceID g_audio_dev;
@@ -98,6 +100,10 @@ static const struct of_capabilities g_caps = {
     .mixer_rate  = OF_AUDIO_RATE,
     .platform_id = OF_PLATFORM_SIM,
     .cpu_freq_hz = 100000000u,
+    /* SDL_GetRelativeMouseState delivers real decoded counts, same as
+     * the v4 device OS -- without this flag a v4-aware app would run
+     * its raw-pair fallback decode on them and mangle every delta. */
+    .os_features = OF_OS_FEAT_MOUSE_COUNTS,
 };
 
 static uint64_t get_us(void) {
@@ -545,16 +551,43 @@ uint32_t of_input_state(int player, of_input_state_t *state) {
     return 0;
 }
 
-/* Keyboard/mouse/deadzone stubs — declared as plain externs in
- * of_input.h's OF_PC branch.  The PC backend doesn't expose dock
- * peripherals through SDL, so return empty state and accept the
+/* Keyboard/deadzone stubs — declared as plain externs in
+ * of_input.h's OF_PC branch.  The PC backend doesn't expose a dock
+ * keyboard through SDL, so return empty state and accept the
  * deadzone for API compatibility. */
 void of_input_keyboard_state(of_keyboard_state_t *state) {
     if (state) memset(state, 0, sizeof(*state));
 }
 
+/* Desktop mouse via SDL.  The contract read is CONSUMING: SDL's
+ * relative state already clears per call, and the button edge masks
+ * are computed against the previous read here.  Individual HID reports
+ * aren't visible on PC, so report_counter advances once per read that
+ * observed any change.  OF button order is L=0 R=1 M=2 (SDL numbers
+ * middle 2, right 3). */
 void of_input_mouse_state(of_mouse_state_t *state) {
-    if (state) memset(state, 0, sizeof(*state));
+    if (!state) return;
+    memset(state, 0, sizeof(*state));
+    if (!g_window) return;  /* no window = no pointer focus yet */
+    SDL_PumpEvents();
+    int dx = 0, dy = 0;
+    Uint32 sdl = SDL_GetRelativeMouseState(&dx, &dy);
+    uint16_t btn = 0;
+    if (sdl & SDL_BUTTON(SDL_BUTTON_LEFT))   btn |= 1u << 0;
+    if (sdl & SDL_BUTTON(SDL_BUTTON_RIGHT))  btn |= 1u << 1;
+    if (sdl & SDL_BUTTON(SDL_BUTTON_MIDDLE)) btn |= 1u << 2;
+    if (sdl & SDL_BUTTON(SDL_BUTTON_X1))     btn |= 1u << 3;
+    if (sdl & SDL_BUTTON(SDL_BUTTON_X2))     btn |= 1u << 4;
+    if (dx || dy || btn != g_prev_mouse_buttons)
+        g_mouse_report_counter++;
+    state->present = 1;
+    state->buttons = btn;
+    state->buttons_pressed  = btn & ~g_prev_mouse_buttons;
+    state->buttons_released = ~btn & g_prev_mouse_buttons;
+    state->report_counter = g_mouse_report_counter;
+    state->dx = dx;
+    state->dy = dy;
+    g_prev_mouse_buttons = btn;
 }
 
 void of_input_set_deadzone(int16_t deadzone) {

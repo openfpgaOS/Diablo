@@ -733,6 +733,29 @@ bool pfile_delete_save(_uiheroinfo *heroInfo)
 	uint32_t saveNum = heroInfo->saveNumber;
 	if (saveNum < MAX_CHARACTERS) {
 		hero_names[saveNum][0] = '\0';
+
+#ifdef OPENFPGAOS
+		// [of] On the openfpgaOS slot filesystem a save is a fixed,
+		// preallocated CRAM window, not a real file: unlink/remove() is a
+		// no-op there (like truncate()), so RemoveFile() below never clears
+		// the slot. The "hero" record survives and pfile_ui_set_hero_infos
+		// re-reads it on the next character-select rebuild, so the deleted
+		// character reappears. Empty the MPQ directory in place instead:
+		// drop every hash entry so ReadHero() finds nothing. The cleared
+		// tables are written back to the slot when the writer closes and
+		// persisted by the launcher's save-on-exit writeback (same path
+		// normal saves use). GetFileName/GetTempSaveNames iterate over
+		// giNumberOfLevels, so set it as pfile_ui_save_create does.
+		giNumberOfLevels = gbIsHellfire ? 25 : 17;
+		{
+			SaveWriter saveWriter = GetSaveWriter(saveNum);
+			saveWriter.RemoveHashEntries(GetFileName);
+			saveWriter.RemoveHashEntries(GetTempSaveNames);
+			saveWriter.RemoveHashEntry("heroitems");
+			saveWriter.RemoveHashEntry("hotkeys");
+		}
+#endif
+
 		RemoveFile(GetSavePath(saveNum).c_str());
 	}
 	return true;

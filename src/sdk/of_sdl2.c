@@ -834,6 +834,15 @@ static Uint32 g_prev_buttons;
 static int    g_prev_axes[4];
 static int    g_mouse_x, g_mouse_y;
 static Uint32 g_mouse_buttons;
+static int    g_mouse_present;
+static int    g_mouse_rel_x, g_mouse_rel_y;
+/* Edges/motion consumed from firmware but not yet emitted as events; the
+ * pump flushes them so state getters never grow the event queue (a getter
+ * pushing events would keep the queue non-empty and starve the pump's
+ * pad/keyboard synthesis in single-PollEvent-per-frame games). */
+static Uint32 g_mouse_of_level;
+static Uint32 g_mouse_pend_down, g_mouse_pend_up;
+static int    g_mouse_pend_xrel, g_mouse_pend_yrel;
 static int    g_text_input;
 static SDL_Keymod g_modstate = KMOD_NONE;
 
@@ -922,6 +931,80 @@ static void update_keystate(uint32_t buttons) {
 	}
 }
 
+/* OF mouse button index (0=L 1=R 2=M 3/4=extra) -> SDL button number.
+ * Note the order difference: SDL numbers middle 2 and right 3. */
+static const Uint8 of_to_mbtn[5] = {
+	SDL_BUTTON_LEFT, SDL_BUTTON_RIGHT, SDL_BUTTON_MIDDLE, SDL_BUTTON_X1, SDL_BUTTON_X2,
+};
+
+/* Physical dock mouse -> SDL pointer model. The firmware read is
+ * CONSUMING (dx/dy and the button edge masks clear on read), so this
+ * must stay the ONLY caller of of_input_mouse_state(); every SDL entry
+ * point shares the state cached here (cursor, button mask, relative
+ * accumulator, pending events). Never-present mouse = no-op, so the
+ * shim's behavior is unchanged on mouse-less setups. State only —
+ * events are parked in g_mouse_pend_* for mouse_flush_events(). */
+static void mouse_refresh(void) {
+	of_mouse_state_t ms;
+	of_input_mouse_state(&ms);
+	if (!ms.present) {
+		if (g_mouse_present) {
+			/* Hot-unplug: the firmware latched release edges for whatever
+			 * was held into this final read; without this the consumed
+			 * edges vanish and the app sees the button held forever. */
+			g_mouse_pend_down |= ms.buttons_pressed;
+			g_mouse_pend_up   |= ms.buttons_released | g_mouse_of_level;
+			g_mouse_of_level = 0;
+			g_mouse_buttons = 0;
+			g_mouse_present = 0;
+		}
+		return;
+	}
+	g_mouse_present = 1;
+	g_mouse_pend_down |= ms.buttons_pressed;
+	g_mouse_pend_up   |= ms.buttons_released;
+	g_mouse_of_level = ms.buttons;
+	Uint32 btns = 0;
+	for (int i = 0; i < 5; i++)
+		if (ms.buttons & (1u << i)) btns |= SDL_BUTTON(of_to_mbtn[i]);
+	g_mouse_buttons = btns;
+	if (ms.dx || ms.dy) {
+		int w = g_window.w, h = g_window.h;
+		if (w <= 0 || h <= 0) fb_dims(&w, &h);
+		g_mouse_x += ms.dx; g_mouse_y += ms.dy;
+		if (g_mouse_x < 0) g_mouse_x = 0; if (g_mouse_x >= w) g_mouse_x = w - 1;
+		if (g_mouse_y < 0) g_mouse_y = 0; if (g_mouse_y >= h) g_mouse_y = h - 1;
+		g_mouse_rel_x += ms.dx; g_mouse_rel_y += ms.dy;
+		g_mouse_pend_xrel += ms.dx; g_mouse_pend_yrel += ms.dy;
+	}
+}
+
+/* Emit the parked mouse events. Pump-only: getters refresh state but must
+ * not push events (see g_mouse_pend_* comment). */
+static void mouse_flush_events(void) {
+	if (g_mouse_pend_xrel || g_mouse_pend_yrel) {
+		SDL_Event e; memset(&e,0,sizeof e); e.type=SDL_MOUSEMOTION; e.motion.state=g_mouse_buttons;
+		e.motion.x=g_mouse_x; e.motion.y=g_mouse_y; e.motion.xrel=g_mouse_pend_xrel; e.motion.yrel=g_mouse_pend_yrel; evq_push(&e);
+		g_mouse_pend_xrel = g_mouse_pend_yrel = 0;
+	}
+	Uint32 down = g_mouse_pend_down, up = g_mouse_pend_up;
+	g_mouse_pend_down = g_mouse_pend_up = 0;
+	for (int i = 0; i < 5; i++) {
+		Uint32 mask = 1u << i;
+		SDL_Event e; memset(&e,0,sizeof e);
+		e.button.button=of_to_mbtn[i]; e.button.clicks=1; e.button.x=g_mouse_x; e.button.y=g_mouse_y;
+		/* Both edges in one interval: order by the final level, so a
+		 * release+re-press ends DOWN and a sub-frame click ends UP. */
+		if ((down & mask) && (g_mouse_of_level & mask)) {
+			if (up & mask) { e.type=SDL_MOUSEBUTTONUP; e.button.state=SDL_RELEASED; evq_push(&e); }
+			e.type=SDL_MOUSEBUTTONDOWN; e.button.state=SDL_PRESSED; evq_push(&e);
+		} else {
+			if (down & mask) { e.type=SDL_MOUSEBUTTONDOWN; e.button.state=SDL_PRESSED; evq_push(&e); }
+			if (up & mask)   { e.type=SDL_MOUSEBUTTONUP;   e.button.state=SDL_RELEASED; evq_push(&e); }
+		}
+	}
+}
+
 static void poll_and_synthesize(void) {
 	of_input_poll();
 	of_input_state_t st; of_input_state(0, &st);
@@ -963,6 +1046,8 @@ static void poll_and_synthesize(void) {
 	}
 	g_prev_buttons = st.buttons;
 	update_keystate(st.buttons);
+	mouse_refresh();
+	mouse_flush_events();
 }
 
 int SDL_PollEvent(SDL_Event *event) {
@@ -1009,13 +1094,20 @@ SDL_bool SDL_HasScreenKeyboardSupport(void){ return SDL_FALSE; }
 /* ===================================================================== */
 /* Mouse / cursor                                                         */
 /* ===================================================================== */
-Uint32 SDL_GetMouseState(int *x, int *y){ if(x)*x=g_mouse_x; if(y)*y=g_mouse_y; return g_mouse_buttons; }
+/* Both state getters refresh first, so pure pollers that never (or
+ * rarely) run the event pump still see live deltas; any events those
+ * refreshes generate stay parked until the next pump. Without a mouse
+ * the refresh is a no-op and g_mouse_buttons stays 0, so games see
+ * exactly the old warp-echo / right-stick behavior. */
+Uint32 SDL_GetMouseState(int *x, int *y){ mouse_refresh(); if(x)*x=g_mouse_x; if(y)*y=g_mouse_y; return g_mouse_buttons; }
 Uint32 SDL_GetGlobalMouseState(int *x, int *y){ return SDL_GetMouseState(x,y); }
 Uint32 SDL_GetRelativeMouseState(int *x, int *y){
+	mouse_refresh();
 	of_input_state_t st; of_input_state(0, &st);
-	if (x) *x = (int)st.joy_rx / 4096;
-	if (y) *y = (int)st.joy_ry / 4096;
-	return 0;
+	if (x) *x = (int)st.joy_rx / 4096 + g_mouse_rel_x;
+	if (y) *y = (int)st.joy_ry / 4096 + g_mouse_rel_y;
+	g_mouse_rel_x = 0; g_mouse_rel_y = 0;
+	return g_mouse_buttons;
 }
 int SDL_SetRelativeMouseMode(SDL_bool enabled){ (void)enabled; return 0; }
 void SDL_WarpMouseInWindow(SDL_Window *win, int x, int y){ (void)win; g_mouse_x=x; g_mouse_y=y; }

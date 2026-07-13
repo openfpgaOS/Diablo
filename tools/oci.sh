@@ -55,6 +55,34 @@ export OCI
 
 oci_is_apple() { [ "$OCI" = container ]; }
 
+# ── Daemon / VM reachability ────────────────────────────────────────────────
+# oci_detect only proves the CLI is on PATH — necessary but NOT sufficient: the
+# Docker daemon / OrbStack VM or the Apple `container` system service can be
+# stopped, in which case `image inspect` fails indistinguishably from "image
+# missing" and would spuriously trigger a (long) bake that then dies deep
+# inside.  Ping the runtime so callers can fail clean and early.
+oci_daemon_ready() {
+    if [ "$OCI" = container ]; then
+        container system status >/dev/null 2>&1 || container ls >/dev/null 2>&1
+    else
+        "$OCI" info >/dev/null 2>&1
+    fi
+}
+
+# Assert the runtime is reachable; print an actionable message and return 1 if
+# not.  Callers: `oci_require_daemon || exit 1` before any image/run work.
+oci_require_daemon() {
+    oci_daemon_ready && return 0
+    if [ "$OCI" = container ]; then
+        echo "ERROR: Apple 'container' CLI is installed but its service isn't running." >&2
+        echo "       Start it, then rerun:   container system start" >&2
+    else
+        echo "ERROR: the '$OCI' CLI is installed but its daemon isn't reachable." >&2
+        echo "       Start Docker Desktop / OrbStack (or the docker service), then rerun." >&2
+    fi
+    return 1
+}
+
 # ── Image existence check ───────────────────────────────────────────────────
 # `docker image inspect` and `container image inspect` are spelled the same.
 oci_image_exists() { "$OCI" image inspect "$1" >/dev/null 2>&1; }

@@ -34,3 +34,27 @@ RUN apt-get update \
 # CPATH in the image's global ENV.  Each wrapper script sets it as needed:
 #   - firmware-container.sh:  exports CPATH=/usr/lib/picolibc/... (firmware build)
 #   - sdk-container.sh:       leaves CPATH unset            (SDK app build)
+
+# xPack riscv-none-elf-gcc — a SECOND, C++-runtime-equipped bare-metal
+# toolchain.  Ubuntu's gcc-riscv64-unknown-elf ships no rv32 libstdc++/
+# libsupc++ at all, which kept the two real-C++-runtime game engines
+# (DevilutionX, ECWolf) on the host toolchain.  Those repos' engine
+# Makefiles set CROSS := riscv-none-elf- inside the container; the OS
+# kernel, musl, and every other app stay on riscv64-unknown-elf- above,
+# so adding this layer changes nothing for them.
+ARG TARGETARCH
+ENV XPACK_RISCV_VER=14.2.0-3
+RUN set -e; \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) XARCH=x64 ;; \
+      arm64) XARCH=arm64 ;; \
+      *) echo "unsupported TARGETARCH ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/xpack-gcc.tar.gz \
+      "https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${XPACK_RISCV_VER}/xpack-riscv-none-elf-gcc-${XPACK_RISCV_VER}-linux-${XARCH}.tar.gz"; \
+    mkdir -p /opt; \
+    tar -C /opt -xzf /tmp/xpack-gcc.tar.gz; \
+    rm /tmp/xpack-gcc.tar.gz; \
+    ln -sfn "/opt/xpack-riscv-none-elf-gcc-${XPACK_RISCV_VER}" /opt/xpack-riscv-none-elf-gcc; \
+    /opt/xpack-riscv-none-elf-gcc/bin/riscv-none-elf-g++ --version
+ENV PATH="/opt/xpack-riscv-none-elf-gcc/bin:${PATH}"

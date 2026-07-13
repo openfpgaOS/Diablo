@@ -167,10 +167,15 @@ static inline int of_texture_create_dynamic(of_texture_t *tex, void *sdram_pixel
     return 0;
 }
 
-/* Make a dynamic texture's freshly-mutated `nbytes` visible to the GPU. */
+/* Make a dynamic texture's freshly-mutated `nbytes` visible to the GPU.
+ * Must be flush (writeback + invalidate), not clean: of_cache.h documents
+ * that on this VexiiRiscv config cbo.clean alone leaves some dirty lines
+ * in L1, and the GPU's texture fetches read DRAM directly — a per-frame
+ * mutated texture (animated sky, procedural surface) would render stale
+ * bytes. */
 static inline void of_texture_update(const of_texture_t *tex, uint32_t nbytes) {
     if (tex->_flags & _OF_TEX_DYNAMIC)
-        of_cache_clean_range((void *)(uintptr_t)tex->_src, nbytes);
+        of_cache_flush_range((void *)(uintptr_t)tex->_src, nbytes);
 }
 
 /* Reset the fast allocator + colormap (e.g. on level change).  Re-create
