@@ -1,0 +1,55 @@
+# openfpgaOS — Diablo (DevilutionX) RISC-V build container.
+#
+# Diablo is the ONE game repo that cannot use the shared C-only firmware image
+# (tools/docker/Dockerfile.firmware): DevilutionX is C++ and statically links
+# the toolchain's REAL libstdc++/libsupc++ and needs the C++ standard headers.
+# Ubuntu's gcc-riscv64-unknown-elf (and Homebrew's riscv64-elf-gcc) ship no
+# bare-metal C++ runtime at all — `#include <string>` fails and no rv32
+# libstdc++.a exists to link.
+#
+# This image carries the xPack riscv-none-elf-gcc toolchain, a freely
+# redistributable bare-metal RISC-V GCC that bundles newlib + a full multilib
+# set of libstdc++/libsupc++ (including rv32imafc / ilp32f, which Diablo needs)
+# and the C++ standard headers. With it, `bash tools/sdk-container.sh make
+# app.elf` — driven automatically by src/diablo/Makefile when USE_SDK_CONTAINER=1
+# — builds identically on Linux and macOS hosts with only Docker (or Apple
+# `container`) installed.
+#
+# The Diablo Makefile discovers the C++ header/lib paths from the compiler
+# itself (`$(CXX) -print-file-name=…`, `-Wp,-v`), so the xPack install prefix
+# does not need to be hard-coded anywhere but PATH.
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Pin the xPack toolchain release. Bump this to adopt a newer GCC; the asset
+# URL scheme (xpack-riscv-none-elf-gcc-<ver>-linux-<arch>.tar.gz) is stable.
+ARG XPACK_VER=15.2.0-1
+# Provided automatically by BuildKit (arm64 on Apple silicon, amd64 on x86).
+ARG TARGETARCH
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        make \
+        python3 \
+        curl \
+        xz-utils \
+        bsdmainutils \
+        ca-certificates \
+ && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Fetch + unpack the xPack toolchain matching the image architecture. The
+# tarball's top level is a single versioned dir; --strip-components=1 lands the
+# bin/ lib/ etc. directly under /opt/xpack so /opt/xpack/bin is on PATH.
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      arm64) XARCH=linux-arm64 ;; \
+      amd64) XARCH=linux-x64   ;; \
+      *) echo "unsupported TARGETARCH='${TARGETARCH}'" >&2; exit 1 ;; \
+    esac; \
+    url="https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${XPACK_VER}/xpack-riscv-none-elf-gcc-${XPACK_VER}-${XARCH}.tar.gz"; \
+    mkdir -p /opt/xpack; \
+    curl -fsSL "$url" | tar -xz -C /opt/xpack --strip-components=1; \
+    /opt/xpack/bin/riscv-none-elf-g++ --version
+
+ENV PATH=/opt/xpack/bin:$PATH

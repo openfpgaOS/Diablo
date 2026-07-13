@@ -93,7 +93,7 @@ endif
 # ── Display name (detected custom core or <core> placeholder) ───────
 # Truncate to 10 chars with ... if too long, to keep help aligned
 ifneq ($(APP_NAME),)
-A := $(shell n="$(APP_NAME)"; [ $${#n} -gt 10 ] && echo "$${n:0:7}..." || echo "$$n")
+A := $(shell n="$(APP_NAME)"; [ $${\#n} -gt 10 ] && echo "$${n:0:7}..." || echo "$$n")
 else
 A := <core>
 endif
