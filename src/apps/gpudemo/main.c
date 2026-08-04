@@ -17,9 +17,10 @@
  * baseline (AFFINE / MASK / CMAP modes); the BLEND mode needs OF_HW_GPU_ALPHA
  * and the PERSP mode needs OF_HW_GPU_PERSP, so those modes only appear in the
  * cycle when the bit is set. On a core with no usable GPU the demo degrades
- * to a terminal notice. (CLAUDE.md also suggests a draw-and-read-back probe;
- * we don't, because reading the framebuffer back on the CPU assumes it lives
- * in the cached-SDRAM alias, which isn't guaranteed — the feature bit is.)
+ * to a terminal notice. (A draw-and-read-back probe is the other way to
+ * detect a GPU; we don't, because reading the framebuffer back on the CPU
+ * assumes it lives in the cached-SDRAM alias, which isn't guaranteed — the
+ * feature bit is.)
  *
  * Modes (A cycles): AFFINE, MASK, CMAP, BLEND (needs ALPHA), PERSP, and
  * MAZE — a Descent-lite fly-through whose walls/floor/ceiling are textured
@@ -1438,7 +1439,7 @@ int main(int argc, char **argv)
     build_translucency();
 
     /* Canonical bring-up: read caps, gate on the GPU feature bit, then init.
-     * (CLAUDE.md also suggests a draw-and-read-back probe, but reading the
+     * (A draw-and-read-back probe would also work, but reading the
      * framebuffer back on the CPU assumes it lives in the cached-SDRAM alias,
      * which isn't guaranteed — so we gate on OF_HW_GPU_SPAN, which is.) */
     const struct of_capabilities *caps = of_get_caps();

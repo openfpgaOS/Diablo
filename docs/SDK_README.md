@@ -4,7 +4,7 @@ Build games for the [Analogue Pocket](https://www.analogue.co/pocket) in C or C+
 
 **Hardware:** VexiiRiscv rv32imafc @ 100 MHz (CPU config varies by bitstream variant; the os20 2D variant is dual-issue with 32 KB I-cache + 64 KB D-cache), 64 MB SDRAM, video source modes up to 800x600 (boot default 320x240; the output path supports 480p), 48 kHz stereo audio, 32-voice hardware PCM mixer, and sample-based MIDI playback.
 
-> **New here?** See [GETTING_STARTED.md](GETTING_STARTED.md) — clone to running code in 5 minutes.
+> **New here?** See [GETTING_STARTED.md](../GETTING_STARTED.md) — clone to running code in 5 minutes.
 
 ## Quick Start
 
