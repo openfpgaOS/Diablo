@@ -175,12 +175,31 @@ extern "C" {
                                          * overwriting emit (compact 0x48,
                                          * 0x4C, 0x49, 0x4A) — mirroring
                                          * the RTL residency contract. */
-#define OF_HW_GPU_XFORM_RGB (1 << 26)   /* GPU transform front-end truecolor +
-                                         * vertex cache + per-vertex lighting:
-                                         * 0x52 xform_tri_rgb, 0x53 load_verts,
-                                         * 0x54 draw_indexed_tri, 0x55
-                                         * set_light_state, 0x57 load_vert_lit.
-                                         * Pocket os30/SM64 sets it. */
+#define OF_HW_GPU_XFORM_RGB (1 << 26)   /* GPU matrix transform front-end,
+                                         * truecolor: 0x50 sticky matrix,
+                                         * 0x52 xform_tri_rgb, 0x53 load_verts
+                                         * (matrix form), 0x54 draw_indexed_tri.
+                                         * Implies the matrix MAC.  Lighting
+                                         * (0x55/0x57) is OF_HW_GPU_LIGHT;
+                                         * the clip-space cache load (0x56)
+                                         * is OF_HW_GPU_CLIP_LOAD -- neither
+                                         * is implied by this bit.  Pocket
+                                         * os30 sets it (2026-08-04). */
+#define OF_HW_GPU_CLIP_LOAD (1 << 29)   /* 0x56 LOAD_VERT_CLIP: park a CPU
+                                         * pre-transformed clip-space vert
+                                         * {x,y,w} in the vertex cache; draw
+                                         * with 0x54.  Independent of the
+                                         * matrix MAC and of bit 26 by design
+                                         * (a MAC-less build can set 29 alone).
+                                         * Tracks gpu_core INCLUDE_VTX_CACHE
+                                         * && INCLUDE_XFORM_RGB. */
+#define OF_HW_GPU_LIGHT     (1 << 30)   /* GPU per-vertex lighting: 0x55
+                                         * set_light_state + 0x57 load_vert_lit.
+                                         * Carved out of bit 26 before it ever
+                                         * shipped: os30 excludes the lighting
+                                         * cone (EXCLUDE_GPU_LIGHT) while the
+                                         * rest of the transform front-end is
+                                         * live.  Tracks INCLUDE_GPU_LIGHT. */
 #define OF_HW_GPU_COMBINE   (1 << 27)   /* GPU full texel*C+D color combiner
                                          * (HILITE/specular class, e.g. the SM64
                                          * title/Goddard Mario head).  Truecolor

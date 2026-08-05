@@ -353,6 +353,9 @@ static uint32_t _gpu_base;
 #define GPU_CMD_LOAD_VERTS           0x53   /* transform one raw vert into a 5-bit GPU
                                              * vertex-cache slot. 7-word. */
 #define GPU_CMD_DRAW_INDEXED_TRI     0x54   /* triangle from 3 cached slots. 1-word. */
+#define GPU_CMD_LOAD_VERT_CLIP       0x56   /* park ONE pre-transformed clip-space
+                                             * vert {x,y,w} in the cache (no MAC);
+                                             * wire-identical to 0x53 otherwise. */
 #define GPU_CMD_SET_LIGHT_STATE      0x55   /* sticky single dir light + ambient for
                                              * 0x57 lit loads. 6-word. */
 #define GPU_CMD_LOAD_VERT_LIT        0x57   /* transform+light one raw vert (object-
@@ -1995,11 +1998,45 @@ static inline void of_gpu_load_vert(uint8_t slot, int32_t vx, int32_t vy, int32_
     _gpu_ring_commit(7u);
 }
 
-/* Draw a triangle from three previously-loaded vertex-cache slots (0x53/0x57).
+/* Park ONE pre-transformed clip-space vert in a GPU vertex-cache slot: the CPU
+ * sends M*v clip {x,y,w} (Q16.16; w is the perspective divisor AND the sole
+ * depth source) and the GPU does ONLY recip+project -- same contract as 0x4F,
+ * but into the cache for 0x54 draw-many.  For hosts that do their own
+ * model/view/projection (Quake2 CPU geometry).  Requires the 0x50 sticky
+ * viewport (xc/yc/scales/near_clip; matrix words are don't-care) and a 0x4A
+ * surface.  Gated on OF_HW_GPU_CLIP_LOAD -- independent of the matrix MAC and
+ * deliberately NOT part of the bit-26 cluster. */
+static inline void of_gpu_load_vert_clip(uint8_t slot, int32_t cx, int32_t cy, int32_t cw,
+                                         int32_t s, int32_t t, uint16_t rgb,
+                                         uint32_t depth) {
+#ifndef OF_PC
+    if (!of_has_feature(OF_HW_GPU_VERT_TRI) || !of_has_feature(OF_HW_GPU_CLIP_LOAD))
+        return;
+#endif
+    _gpu_cmd_header(GPU_CMD_LOAD_VERT_CLIP, 8);
+    uint32_t *w = _gpu_ring_claim();
+    *w++ = (uint32_t)(slot & 0x1Fu);
+    *w++ = (uint32_t)cx;
+    *w++ = (uint32_t)cy;
+    *w++ = (uint32_t)cw;
+    *w++ = (uint32_t)s;
+    *w++ = (uint32_t)t;
+    *w++ = (uint32_t)rgb;
+    *w++ = depth;   /* explicit z-buffer depth: the GPU-derived value (= zi)
+                     * quantizes far-field z; send (1/w)*2^30 computed in float
+                     * for full legacy-0x4E depth precision.  zi (perspective)
+                     * is still GPU-derived from cw. */
+    _gpu_ring_commit(8u);
+}
+
+/* Draw a triangle from three previously-loaded vertex-cache slots (0x53/0x56/0x57).
  * One word packs three 5-bit indices.  Cluster-gated (OF_HW_GPU_XFORM_RGB). */
 static inline void of_gpu_draw_indexed_tri(uint8_t i0, uint8_t i1, uint8_t i2) {
 #ifndef OF_PC
-    if (!of_has_feature(OF_HW_GPU_VERT_TRI) || !of_has_feature(OF_HW_GPU_XFORM_RGB))
+    /* Cache draws work whenever ANY load path exists: matrix form (bit 26)
+     * or clip form (bit 29) -- a MAC-less build sets only the latter. */
+    if (!of_has_feature(OF_HW_GPU_VERT_TRI) ||
+        (!of_has_feature(OF_HW_GPU_XFORM_RGB) && !of_has_feature(OF_HW_GPU_CLIP_LOAD)))
         return;
 #endif
     _gpu_cmd_header(GPU_CMD_DRAW_INDEXED_TRI, 1);
@@ -2019,7 +2056,10 @@ static inline void of_gpu_set_light_state(int32_t dx, int32_t dy, int32_t dz,
                                           uint16_t light_rgb, uint16_t ambient_rgb,
                                           uint8_t enable) {
 #ifndef OF_PC
-    if (!of_has_feature(OF_HW_GPU_VERT_TRI) || !of_has_feature(OF_HW_GPU_XFORM_RGB))
+    /* Lighting has its own bit (30): os30 ships the transform front-end with
+     * the lighting cone excluded, so bit 26 alone no longer implies 0x55/57. */
+    if (!of_has_feature(OF_HW_GPU_VERT_TRI) || !of_has_feature(OF_HW_GPU_XFORM_RGB) ||
+        !of_has_feature(OF_HW_GPU_LIGHT))
         return;
 #endif
     _gpu_cmd_header(GPU_CMD_SET_LIGHT_STATE, 6);
@@ -2043,7 +2083,8 @@ static inline void of_gpu_load_vert_lit(uint8_t slot, int32_t vx, int32_t vy, in
                                         int32_t nx, int32_t ny, int32_t nz,
                                         int32_t s, int32_t t) {
 #ifndef OF_PC
-    if (!of_has_feature(OF_HW_GPU_VERT_TRI) || !of_has_feature(OF_HW_GPU_XFORM_RGB))
+    if (!of_has_feature(OF_HW_GPU_VERT_TRI) || !of_has_feature(OF_HW_GPU_XFORM_RGB) ||
+        !of_has_feature(OF_HW_GPU_LIGHT))
         return;
 #endif
     _gpu_cmd_header(GPU_CMD_LOAD_VERT_LIT, 9);
@@ -2174,6 +2215,10 @@ static inline void     of_gpu_draw_clip_tri(const int32_t cx[3], const int32_t c
 static inline void     of_gpu_load_vert(uint8_t slot, int32_t vx, int32_t vy, int32_t vz,
                                         int32_t s, int32_t t, uint16_t rgb)
                                         { (void)slot;(void)vx;(void)vy;(void)vz;(void)s;(void)t;(void)rgb; }
+static inline void     of_gpu_load_vert_clip(uint8_t slot, int32_t cx, int32_t cy, int32_t cw,
+                                             int32_t s, int32_t t, uint16_t rgb,
+                                             uint32_t depth)
+                                             { (void)slot;(void)cx;(void)cy;(void)cw;(void)s;(void)t;(void)rgb;(void)depth; }
 static inline void     of_gpu_draw_indexed_tri(uint8_t i0, uint8_t i1, uint8_t i2)
                                                { (void)i0;(void)i1;(void)i2; }
 static inline void     of_gpu_set_light_state(int32_t dx, int32_t dy, int32_t dz,
