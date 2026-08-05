@@ -394,8 +394,20 @@ TEST(Writehero, pfile_write_hero)
 
 	std::vector<unsigned char> s(picosha2::k_digest_size);
 	picosha2::hash256(data.get(), data.get() + size, s.begin(), s.end());
+	// [of] This pins the whole archive, header and tables included, so it moved
+	// when new archives adopted the compact layout: 256/512 hash/block tables
+	// instead of 2048/2048, and 64 KB sectors instead of 4 KB
+	// (MpqWriter::New*EntriesCount / NewBlockSizeFactor). The decoded member
+	// payloads are unchanged -- this is purely archive framing, and the
+	// migration test proves a legacy save round-trips through it byte-for-byte.
+	// Together they buy back room in the fixed 256 KB nonvolatile save slot on
+	// openfpgaOS: a finished 16-level Hellfire save drops from 90.4% of the
+	// slot to 61.3%, and a fresh single-hero save from ~65.8 KB to ~12.8 KB.
+	// Previous expectations:
+	//   2048 tables, 4 KB sectors: a79367caae6192d54703168d82e0316aa289b2a33251255fad8abe34889c1d3a
+	//    256 tables, 4 KB sectors: 80b2469261cbe11ac88887db2519a25101f5a5170511d386bb47d4f89e9aa7db
 	EXPECT_EQ(picosha2::bytes_to_hex_string(s.begin(), s.end()),
-	    "a79367caae6192d54703168d82e0316aa289b2a33251255fad8abe34889c1d3a");
+	    "a4d841d06e52072ebbc9d766f9adb4212dd045b195c44f4652621b8600a8e10f");
 }
 
 } // namespace

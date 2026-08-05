@@ -61,6 +61,11 @@ public:
 
 	bool HasFile(const char *filename) const;
 
+	// [of] Number of live members (block entries flagged EXISTS). Lets the
+	// save-layout migration prove its by-name staging found every member
+	// before it rewrites the archive.
+	uint32_t GetFileCount(int32_t &error) const;
+
 private:
 	MpqArchive(std::string path, mpq_archive_s *archive)
 	    : path_(std::move(path))

@@ -52,23 +52,52 @@ struct CheckSize : AssertEq<sizeof(T), S>, AssertLte<alignof(T), sizeof(T)> {
 static_assert(CheckSize<MpqHashEntry, static_cast<size_t>(4 * 4)>::value, "sizeof(MpqHashEntry) == 4 * 4 && alignof(MpqHashEntry) <= 4 * 4 not satisfied");
 static_assert(CheckSize<MpqBlockEntry, static_cast<size_t>(4 * 4)>::value, "sizeof(MpqBlockEntry) == 4 * 4 && alignof(MpqBlockEntry) <= 4 * 4 not satisfied");
 
-// We use fixed size block and hash entry tables.
-constexpr uint32_t HashEntriesCount = 2048;
-constexpr uint32_t BlockEntriesCount = 2048;
-constexpr uint32_t BlockEntrySize = HashEntriesCount * sizeof(MpqBlockEntry);
-constexpr uint32_t HashEntrySize = BlockEntriesCount * sizeof(MpqHashEntry);
+// [of] Table sizes are per-archive now (MpqWriter::hashEntriesCount_ /
+// blockEntriesCount_), adopted from the header of an existing archive and
+// defaulted to MpqWriter::New*EntriesCount for one we create. Only the bounds
+// are fixed here, so a corrupt or hostile header cannot drive the allocation.
+//
+// Note the old file-scope byte-count constants had their entry counts crossed
+// over -- the block table's byte size was derived from the hash entry count
+// and vice versa. Harmless only because both were 2048; it would have
+// corrupted both tables the moment they differed, which is exactly what this
+// change makes possible. The accessors below derive each from its own count.
+constexpr uint32_t MinTableEntriesCount = 64;
+constexpr uint32_t MaxTableEntriesCount = 2048;
+
+// A power of two within bounds: the hash probe wraps with a mask, so anything
+// else would index outside the table.
+bool IsSupportedTableCount(uint32_t count)
+{
+	return count >= MinTableEntriesCount && count <= MaxTableEntriesCount
+	    && (count & (count - 1)) == 0;
+}
 
 // We store the block and the hash entry tables immediately after the header.
 // This is unlike most other MPQ archives, that store these at the end of the file.
 constexpr long MpqBlockEntryOffset = sizeof(MpqFileHeader);
-constexpr long MpqHashEntryOffset = MpqBlockEntryOffset + BlockEntrySize;
 
 // Special return value for `GetHashIndex` and `GetHandle`.
 constexpr uint32_t HashEntryNotFound = -1;
 
-// We use 4096-byte blocks, generally.
-constexpr uint16_t BlockSizeFactor = 3;
-constexpr uint32_t BlockSize = 512 << BlockSizeFactor; // 4096
+// [of] Sector size is per-archive too (MpqWriter::blockSizeFactor_), adopted
+// from an existing header and defaulted to MpqWriter::NewBlockSizeFactor for a
+// new archive. Bounds only here: factor 3 is the 4 KB every shipped MPQ uses
+// (DIABDAT and devilutionx.mpq both), factor 7 is the 64 KB new saves get.
+//
+// Why it matters: every sector is compressed independently, so PkWare's 4 KB
+// implode dictionary was being reset every 4096 bytes. Letting it run across
+// what used to be sector boundaries costs nothing and shrinks a finished
+// 16-level Hellfire save by ~11%, measured. libmpq derives its own block size
+// from the header (mpq.c: `block_size = 512 << header.block_size`), so the read
+// path needs no change.
+constexpr uint16_t MinBlockSizeFactor = 3;
+constexpr uint16_t MaxBlockSizeFactor = 7;
+
+bool IsSupportedBlockSizeFactor(uint16_t factor)
+{
+	return factor >= MinBlockSizeFactor && factor <= MaxBlockSizeFactor;
+}
 
 // Sometimes we can end up with smaller blocks.
 constexpr uint32_t MinBlockSize = 1024;
@@ -98,7 +127,7 @@ bool IsUnallocatedBlock(const MpqBlockEntry *block)
 
 } // namespace
 
-MpqWriter::MpqWriter(const char *path)
+MpqWriter::MpqWriter(const char *path, bool recreate)
 {
 	const std::string dir = std::string(Dirname(path));
 	RecursivelyCreateDir(dir.c_str());
@@ -141,11 +170,16 @@ MpqWriter::MpqWriter(const char *path)
 		// zero, so MPQ-magic-check on the read header fails. Initializing
 		// a default header lets subsequent EncodeHero/SaveHeroItems writes
 		// populate the MPQ in place instead of falling into on_error.
-		if (isNewFile || !ReadMPQHeader(&fhdr)) {
+		// [of] `recreate` skips the adopt-existing-layout path entirely, so the
+		// archive is rebuilt with this build's geometry (see the constructor
+		// comment). fhdr is zeroed, so the table reads below are skipped and
+		// the in-memory tables start empty.
+		if (recreate || isNewFile || !ReadMPQHeader(&fhdr)) {
 			InitDefaultMpqHeader(&fhdr);
 		}
-		blockTable_ = std::make_unique<MpqBlockEntry[]>(BlockEntriesCount);
-		std::memset(blockTable_.get(), 0, BlockEntriesCount * sizeof(MpqBlockEntry));
+		// [of] Sized from the geometry ReadMPQHeader adopted, not a constant.
+		blockTable_ = std::make_unique<MpqBlockEntry[]>(blockEntriesCount_);
+		std::memset(blockTable_.get(), 0, BlockTableBytes());
 		if (fhdr.blockEntriesCount > 0) {
 			if (!stream_.Read(reinterpret_cast<char *>(blockTable_.get()), static_cast<size_t>(fhdr.blockEntriesCount * sizeof(MpqBlockEntry)))) {
 				error = "Failed to read block table";
@@ -154,10 +188,10 @@ MpqWriter::MpqWriter(const char *path)
 			uint32_t key = Hash("(block table)", 3);
 			Decrypt(reinterpret_cast<uint32_t *>(blockTable_.get()), fhdr.blockEntriesCount * sizeof(MpqBlockEntry), key);
 		}
-		hashTable_ = std::make_unique<MpqHashEntry[]>(HashEntriesCount);
+		hashTable_ = std::make_unique<MpqHashEntry[]>(hashEntriesCount_);
 
 		// We fill with 0xFF so that the `block` field defaults to -1 (a null block pointer).
-		std::memset(hashTable_.get(), 0xFF, HashEntriesCount * sizeof(MpqHashEntry));
+		std::memset(hashTable_.get(), 0xFF, HashTableBytes());
 
 		if (fhdr.hashEntriesCount > 0) {
 			if (!stream_.Read(reinterpret_cast<char *>(hashTable_.get()), static_cast<size_t>(fhdr.hashEntriesCount * sizeof(MpqHashEntry)))) {
@@ -228,9 +262,15 @@ void MpqWriter::InitDefaultMpqHeader(MpqFileHeader *hdr)
 	std::memset(hdr, 0, sizeof(*hdr));
 	hdr->signature = MpqFileHeader::DiabloSignature;
 	hdr->headerSize = MpqFileHeader::DiabloSize;
-	hdr->blockSizeFactor = BlockSizeFactor;
+	hdr->blockSizeFactor = NewBlockSizeFactor;
+	blockSizeFactor_ = NewBlockSizeFactor;
 	hdr->version = 0;
-	size_ = MpqHashEntryOffset + HashEntrySize;
+	// [of] A brand-new archive gets this build's geometry. Reset explicitly:
+	// this is also the fallback path for an unreadable header on a writer that
+	// may already have adopted a previous archive's larger tables.
+	hashEntriesCount_ = NewHashEntriesCount;
+	blockEntriesCount_ = NewBlockEntriesCount;
+	size_ = HashEntriesOffset() + HashTableBytes();
 }
 
 bool MpqWriter::IsValidMpqHeader(MpqFileHeader *hdr) const
@@ -238,7 +278,11 @@ bool MpqWriter::IsValidMpqHeader(MpqFileHeader *hdr) const
 	return hdr->signature == MpqFileHeader::DiabloSignature
 	    && hdr->headerSize == MpqFileHeader::DiabloSize
 	    && hdr->version <= 0
-	    && hdr->blockSizeFactor == BlockSizeFactor
+	    // [of] Sector size stays pinned. Every archive this game has ever
+	    // written uses factor 3 (4 KB), PkWare's implode dictionary maxes out
+	    // at 4096 anyway, and keeping it constant keeps the per-sector scratch
+	    // buffer a fixed-size stack array. Only the TABLE geometry varies.
+	    && IsSupportedBlockSizeFactor(hdr->blockSizeFactor)
 	    // [of] `<=`, not `==`: on the slot FS truncate() is a no-op, so the
 	    // physical size reported by stat() can be LARGER than the archive's
 	    // logical size whenever a save shrinks (and a fresh-but-committed
@@ -249,10 +293,16 @@ bool MpqWriter::IsValidMpqHeader(MpqFileHeader *hdr) const
 	    // writer and libmpq address blocks by header offsets, never by
 	    // physical file size. ReadMPQHeader() adopts the logical size.
 	    && hdr->fileSize <= size_
-	    && hdr->hashEntriesOffset == MpqHashEntryOffset
 	    && hdr->blockEntriesOffset == sizeof(MpqFileHeader)
-	    && hdr->hashEntriesCount == HashEntriesCount
-	    && hdr->blockEntriesCount == BlockEntriesCount;
+	    // [of] Accept ANY supported table geometry rather than only this
+	    // build's. Requiring equality here is what would turn a table-size
+	    // change into "every existing save is silently reinitialized".
+	    // The tables sit immediately after the header, so the hash table's
+	    // offset is implied by the block table's length -- verifying that
+	    // relation is what makes an adopted geometry safe to index with.
+	    && IsSupportedTableCount(hdr->hashEntriesCount)
+	    && IsSupportedTableCount(hdr->blockEntriesCount)
+	    && hdr->hashEntriesOffset == sizeof(MpqFileHeader) + hdr->blockEntriesCount * sizeof(MpqBlockEntry);
 }
 
 bool MpqWriter::ReadMPQHeader(MpqFileHeader *hdr)
@@ -265,11 +315,21 @@ bool MpqWriter::ReadMPQHeader(MpqFileHeader *hdr)
 	}
 	if (!hasHdr || !IsValidMpqHeader(hdr)) {
 		InitDefaultMpqHeader(hdr);
-	} else if (hdr->fileSize != size_) {
-		// [of] Adopt the archive's logical size; the physical file is
-		// allowed to be larger (see IsValidMpqHeader). New blocks append
-		// from the logical end, overwriting the stale tail.
-		size_ = hdr->fileSize;
+	} else {
+		// [of] Adopt this archive's declared table geometry before the tables
+		// are allocated, so a save written by an older build (2048/2048) keeps
+		// working byte-for-byte instead of being discarded and recreated.
+		hashEntriesCount_ = hdr->hashEntriesCount;
+		blockEntriesCount_ = hdr->blockEntriesCount;
+		// Sector size is part of the adopted layout: existing sectors were
+		// compressed at this size and their offset tables assume it.
+		blockSizeFactor_ = hdr->blockSizeFactor;
+		if (hdr->fileSize != size_) {
+			// [of] Adopt the archive's logical size; the physical file is
+			// allowed to be larger (see IsValidMpqHeader). New blocks append
+			// from the logical end, overwriting the stale tail.
+			size_ = hdr->fileSize;
+		}
 	}
 	return true;
 }
@@ -278,7 +338,7 @@ MpqBlockEntry *MpqWriter::NewBlock(uint32_t *blockIndex)
 {
 	MpqBlockEntry *blockEntry = blockTable_.get();
 
-	for (unsigned i = 0; i < BlockEntriesCount; ++i, ++blockEntry) {
+	for (unsigned i = 0; i < blockEntriesCount_; ++i, ++blockEntry) {
 		if (!IsUnallocatedBlock(blockEntry))
 			continue;
 
@@ -298,7 +358,7 @@ void MpqWriter::AllocBlock(uint32_t blockOffset, uint32_t blockSize)
 	do {
 		block = blockTable_.get();
 		expand = false;
-		for (unsigned i = BlockEntriesCount; i-- != 0; ++block) {
+		for (unsigned i = blockEntriesCount_; i-- != 0; ++block) {
 			// Expand to adjacent blocks.
 			if (!IsAllocatedUnusedBlock(block))
 				continue;
@@ -337,7 +397,7 @@ uint32_t MpqWriter::FindFreeBlock(uint32_t size)
 	uint32_t result;
 
 	MpqBlockEntry *block = blockTable_.get();
-	for (unsigned i = 0; i < BlockEntriesCount; ++i, ++block) {
+	for (unsigned i = 0; i < blockEntriesCount_; ++i, ++block) {
 		// Find a block entry to use space from.
 		if (!IsAllocatedUnusedBlock(block) || block->packedSize < size)
 			continue;
@@ -360,8 +420,8 @@ uint32_t MpqWriter::FindFreeBlock(uint32_t size)
 
 uint32_t MpqWriter::GetHashIndex(uint32_t index, uint32_t hashA, uint32_t hashB) const // NOLINT(bugprone-easily-swappable-parameters)
 {
-	uint32_t i = HashEntriesCount;
-	for (unsigned idx = index & 0x7FF; hashTable_[idx].block != MpqHashEntry::NullBlock; idx = (idx + 1) & 0x7FF) {
+	uint32_t i = hashEntriesCount_;
+	for (unsigned idx = index & HashIndexMask(); hashTable_[idx].block != MpqHashEntry::NullBlock; idx = (idx + 1) & HashIndexMask()) {
 		if (i-- == 0)
 			break;
 		if (hashTable_[idx].hashA != hashA)
@@ -389,15 +449,15 @@ MpqBlockEntry *MpqWriter::AddFile(const char *filename, MpqBlockEntry *block, ui
 	uint32_t h3 = Hash(filename, 2);
 	if (GetHashIndex(h1, h2, h3) != HashEntryNotFound)
 		app_fatal(StrCat("Hash collision between \"", filename, "\" and existing file\n"));
-	unsigned int hIdx = h1 & 0x7FF;
+	unsigned int hIdx = h1 & HashIndexMask();
 
 	bool hasSpace = false;
-	for (unsigned i = 0; i < HashEntriesCount; ++i) {
+	for (unsigned i = 0; i < hashEntriesCount_; ++i) {
 		if (hashTable_[hIdx].block == MpqHashEntry::NullBlock || hashTable_[hIdx].block == MpqHashEntry::DeletedBlock) {
 			hasSpace = true;
 			break;
 		}
-		hIdx = (hIdx + 1) & 0x7FF;
+		hIdx = (hIdx + 1) & HashIndexMask();
 	}
 	if (!hasSpace)
 		app_fatal("Out of hash space");
@@ -424,7 +484,8 @@ bool MpqWriter::WriteFileContents(const char *filename, const byte *fileData, si
 		filename = tmp + 1;
 	Hash(filename, 3);
 
-	const uint32_t numSectors = (fileSize + (BlockSize - 1)) / BlockSize;
+	const uint32_t sectorSize = SectorSize();
+	const uint32_t numSectors = (fileSize + (sectorSize - 1)) / sectorSize;
 	const uint32_t offsetTableByteSize = sizeof(uint32_t) * (numSectors + 1);
 
 #ifdef OPENFPGAOS
@@ -446,27 +507,29 @@ bool MpqWriter::WriteFileContents(const char *filename, const byte *fileData, si
 	// compressed size, bound-check it against the slot window once, and
 	// write table+sectors in a single sequential pass (no seek-past-EOF,
 	// no backpatch -- the pattern the slot FS is actually validated for).
-	// On overflow: return false with `valid_` intact; WriteFile() removes
-	// the hash entry and frees the block (restoring `size_`), and close
-	// still writes consistent tables.
+	// On overflow: return false with `valid_` intact; WriteFile() hands the
+	// carved space back and clears the never-published block entry -- the
+	// member's previous copy, if any, stays live -- and close still writes
+	// consistent tables.
 	{
 		std::unique_ptr<byte[]> packed { new byte[offsetTableByteSize + fileSize] };
 		uint32_t *offsetTable = reinterpret_cast<uint32_t *>(packed.get());
 		uint32_t destSize = offsetTableByteSize;
-		byte mpqBuf[BlockSize];
+		// [of] Heap, not stack: a 64 KB sector buffer would blow the device stack.
+		std::unique_ptr<byte[]> mpqBuf { new byte[sectorSize] };
 		size_t curSector = 0;
 		size_t remaining = fileSize;
 		while (true) {
-			uint32_t len = std::min<uint32_t>(remaining, BlockSize);
-			memcpy(mpqBuf, fileData, len);
+			uint32_t len = std::min<uint32_t>(remaining, sectorSize);
+			memcpy(mpqBuf.get(), fileData, len);
 			fileData += len;
-			len = PkwareCompress(mpqBuf, len);
-			memcpy(packed.get() + destSize, mpqBuf, len);
+			len = PkwareCompress(mpqBuf.get(), len);
+			memcpy(packed.get() + destSize, mpqBuf.get(), len);
 			offsetTable[curSector++] = SDL_SwapLE32(destSize);
 			destSize += len;
-			if (remaining <= BlockSize)
+			if (remaining <= sectorSize)
 				break;
-			remaining -= BlockSize;
+			remaining -= sectorSize;
 		}
 		offsetTable[numSectors] = SDL_SwapLE32(destSize);
 
@@ -523,21 +586,21 @@ bool MpqWriter::WriteFileContents(const char *filename, const byte *fileData, si
 #endif
 
 	uint32_t destSize = offsetTableByteSize;
-	byte mpqBuf[BlockSize];
+	std::unique_ptr<byte[]> mpqBuf { new byte[sectorSize] };
 	size_t curSector = 0;
 	while (true) {
-		uint32_t len = std::min<uint32_t>(fileSize, BlockSize);
-		memcpy(mpqBuf, fileData, len);
+		uint32_t len = std::min<uint32_t>(fileSize, sectorSize);
+		memcpy(mpqBuf.get(), fileData, len);
 		fileData += len;
-		len = PkwareCompress(mpqBuf, len);
+		len = PkwareCompress(mpqBuf.get(), len);
 		if (!stream_.Write(reinterpret_cast<const char *>(&mpqBuf[0]), len))
 			return false;
 		offsetTable[curSector++] = SDL_SwapLE32(destSize);
 		destSize += len; // compressed length
-		if (fileSize <= BlockSize)
+		if (fileSize <= sectorSize)
 			break;
 
-		fileSize -= BlockSize;
+		fileSize -= sectorSize;
 	}
 
 	offsetTable[numSectors] = SDL_SwapLE32(destSize);
@@ -569,11 +632,11 @@ bool MpqWriter::WriteHeader()
 	fhdr.headerSize = MpqFileHeader::DiabloSize;
 	fhdr.fileSize = static_cast<uint32_t>(size_);
 	fhdr.version = 0;
-	fhdr.blockSizeFactor = BlockSizeFactor;
-	fhdr.hashEntriesOffset = MpqHashEntryOffset;
+	fhdr.blockSizeFactor = blockSizeFactor_;
+	fhdr.hashEntriesOffset = HashEntriesOffset();
 	fhdr.blockEntriesOffset = MpqBlockEntryOffset;
-	fhdr.hashEntriesCount = HashEntriesCount;
-	fhdr.blockEntriesCount = BlockEntriesCount;
+	fhdr.hashEntriesCount = hashEntriesCount_;
+	fhdr.blockEntriesCount = blockEntriesCount_;
 	ByteSwapHdr(&fhdr);
 
 	return stream_.Write(reinterpret_cast<const char *>(&fhdr), sizeof(fhdr));
@@ -581,17 +644,17 @@ bool MpqWriter::WriteHeader()
 
 bool MpqWriter::WriteBlockTable()
 {
-	Encrypt(reinterpret_cast<uint32_t *>(blockTable_.get()), BlockEntrySize, Hash("(block table)", 3));
-	const bool success = stream_.Write(reinterpret_cast<const char *>(blockTable_.get()), BlockEntrySize);
-	Decrypt(reinterpret_cast<uint32_t *>(blockTable_.get()), BlockEntrySize, Hash("(block table)", 3));
+	Encrypt(reinterpret_cast<uint32_t *>(blockTable_.get()), BlockTableBytes(), Hash("(block table)", 3));
+	const bool success = stream_.Write(reinterpret_cast<const char *>(blockTable_.get()), BlockTableBytes());
+	Decrypt(reinterpret_cast<uint32_t *>(blockTable_.get()), BlockTableBytes(), Hash("(block table)", 3));
 	return success;
 }
 
 bool MpqWriter::WriteHashTable()
 {
-	Encrypt(reinterpret_cast<uint32_t *>(hashTable_.get()), HashEntrySize, Hash("(hash table)", 3));
-	const bool success = stream_.Write(reinterpret_cast<const char *>(hashTable_.get()), HashEntrySize);
-	Decrypt(reinterpret_cast<uint32_t *>(hashTable_.get()), HashEntrySize, Hash("(hash table)", 3));
+	Encrypt(reinterpret_cast<uint32_t *>(hashTable_.get()), HashTableBytes(), Hash("(hash table)", 3));
+	const bool success = stream_.Write(reinterpret_cast<const char *>(hashTable_.get()), HashTableBytes());
+	Decrypt(reinterpret_cast<uint32_t *>(hashTable_.get()), HashTableBytes(), Hash("(hash table)", 3));
 	return success;
 }
 
@@ -628,14 +691,50 @@ bool MpqWriter::WriteFile(const char *filename, const byte *data, size_t size)
 		write_failed_ = true; // [of] ctor failed: tables/stream not ready
 		return false;
 	}
-	MpqBlockEntry *blockEntry;
+	// [of] Write the replacement BEFORE retiring the copy already in the
+	// archive. This used to RemoveHashEntry() first and only then attempt the
+	// write, so a write that failed for ANY reason -- most commonly the fixed
+	// slot running out of room -- left the archive with neither copy. Because
+	// SaveGameData writes the large "game" member first and the small "hero"
+	// last, a full slot dropped "game" and then still fitted "hero": the save
+	// reloaded as a valid character with no game state, and the player was
+	// silently sent back to difficulty selection as if starting anew, losing
+	// their progress. Ordering it this way turns that into a recoverable
+	// "Save failed!" with the previous save still intact.
+	//
+	// The cost is that a replacement transiently needs room for both copies,
+	// so a nearly-full archive can now fail a write that previously "worked"
+	// by destroying the old copy first. Failing while the good save survives
+	// is the strictly better outcome, and the smaller tables written by
+	// New*EntriesCount buy back far more room than this costs.
+	const uint32_t oldHashIdx = FetchHandle(filename);
+	const bool replacing = oldHashIdx != HashEntryNotFound;
+	const uint32_t oldBlockIdx = replacing ? hashTable_[oldHashIdx].block : 0;
 
-	RemoveHashEntry(filename);
-	blockEntry = AddFile(filename, nullptr, 0);
-	if (!WriteFileContents(filename, data, size, blockEntry)) {
-		RemoveHashEntry(filename);
+	uint32_t newBlockIdx = 0;
+	MpqBlockEntry *newBlock = NewBlock(&newBlockIdx);
+	if (!WriteFileContents(filename, data, size, newBlock)) {
+		// Hand back whatever FindFreeBlock carved out before the failure; the
+		// entry itself never became reachable, so nothing else must be undone.
+		if (newBlock->packedSize != 0)
+			AllocBlock(newBlock->offset, newBlock->packedSize);
+		std::memset(newBlock, 0, sizeof(*newBlock));
 		write_failed_ = true; // [of] surfaced via HadWriteFailure()
 		return false;
+	}
+
+	if (replacing) {
+		// Repoint the existing hash entry, then release the superseded block.
+		// AddFile() cannot be used here: it app_fatals on a name that is still
+		// present, which is precisely the state we are in.
+		hashTable_[oldHashIdx].block = newBlockIdx;
+		MpqBlockEntry *oldBlock = &blockTable_[oldBlockIdx];
+		const uint32_t oldOffset = oldBlock->offset;
+		const uint32_t oldSize = oldBlock->packedSize;
+		std::memset(oldBlock, 0, sizeof(*oldBlock));
+		AllocBlock(oldOffset, oldSize);
+	} else {
+		AddFile(filename, newBlock, newBlockIdx);
 	}
 	return true;
 }

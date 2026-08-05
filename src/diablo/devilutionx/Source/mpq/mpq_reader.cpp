@@ -151,4 +151,16 @@ bool MpqArchive::HasFile(const char *filename) const
 	return error == 0;
 }
 
+uint32_t MpqArchive::GetFileCount(int32_t &error) const
+{
+	// [of] Live members in the archive: libmpq counts block-table entries with
+	// the EXISTS flag at open, which excludes free-space records (flags == 0).
+	// The save-layout migration compares this against how many members it
+	// staged by name, so a member outside its name list cannot be silently
+	// dropped by the rewrite.
+	uint32_t files = 0;
+	error = libmpq__archive_files(archive_, &files);
+	return files;
+}
+
 } // namespace devilution

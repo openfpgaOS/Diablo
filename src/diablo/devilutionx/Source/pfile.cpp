@@ -7,8 +7,11 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
+#include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <fmt/core.h>
 
@@ -492,6 +495,91 @@ void pfile_write_hero(SaveWriter &saveWriter, bool writeGameData)
 	}
 }
 
+// [of] The save-layout migration below is MPQ-specific by nature: it exists to
+// shed the archive's oversized hash/block tables and 4 KB sectors. Unpacked
+// saves are plain files in a directory -- no tables, no sectors, nothing to
+// migrate -- and their SaveWriter has no `recreate` constructor.
+#ifndef UNPACKED_SAVES
+
+// [of] Names a save archive can hold, enumerated independently of the mode
+// that happens to be loaded. GetSaveNames() splits 'l' (dungeon) from 's' (set
+// level) at giNumberOfLevels -- 17 in Diablo, 25 in Hellfire -- so driving the
+// migration off it would silently skip members whenever the global disagrees
+// with how the archive was written. Enumerating the widest range instead makes
+// this a superset for both modes; absent names are simply skipped.
+constexpr int MaxSaveLevelNames = 25;
+
+template <typename Fn>
+void ForEachSaveMemberName(Fn &&fn)
+{
+	for (const char *fixed : { "hero", "game", "heroitems", "hotkeys", "additionalMissiles" })
+		fn(fixed);
+	char name[MaxMpqPathSize];
+	for (const char *prefix : { "perm", "temp" }) {
+		for (const char suffix : { 'l', 's' }) {
+			for (int i = 0; i < MaxSaveLevelNames; i++) {
+				*fmt::format_to(name, "{}{}{:02d}", prefix, suffix, i) = '\0';
+				fn(static_cast<const char *>(name));
+			}
+		}
+	}
+}
+
+// Reads just the archive header to classify its layout. Deliberately avoids
+// opening an MpqWriter: that would rewrite the header and both tables on
+// destruction, dirtying a nonvolatile slot every time the character-select
+// screen looks at a save it does not need to touch.
+bool SaveUsesLegacyLayout(const std::string &path)
+{
+	std::FILE *f = OpenFile(path.c_str(), "rb");
+	if (f == nullptr)
+		return false;
+	MpqFileHeader hdr;
+	const size_t read = std::fread(&hdr, 1, sizeof(hdr), f);
+	std::fclose(f);
+	if (read != sizeof(hdr))
+		return false;
+	if (SDL_SwapLE32(hdr.signature) != MpqFileHeader::DiabloSignature)
+		return false;
+	// Any axis of the legacy layout qualifies: oversized tables OR the old
+	// 4 KB sectors. Mirrors MpqWriter::IsLegacyLayout so the two definitions
+	// of "needs migrating" cannot drift apart silently.
+	return SDL_SwapLE32(hdr.hashEntriesCount) > MpqWriter::NewHashEntriesCount
+	    || SDL_SwapLE32(hdr.blockEntriesCount) > MpqWriter::NewBlockEntriesCount
+	    || SDL_SwapLE16(hdr.blockSizeFactor) < MpqWriter::NewBlockSizeFactor;
+}
+
+// One archive member held in memory across a layout migration.
+struct StagedMember {
+	std::string name;
+	std::unique_ptr<byte[]> data;
+	size_t size;
+};
+
+// Re-reads the rewritten archive and proves every staged member came back
+// byte-for-byte. The migration discards the on-disk archive before writing, so
+// this is the only thing that distinguishes "rewritten" from "destroyed".
+bool VerifySaveMembers(const std::string &path, const std::vector<StagedMember> &staged)
+{
+	std::optional<SaveReader> archive = CreateSaveReader(std::string(path));
+	if (!archive)
+		return false;
+	for (const StagedMember &m : staged) {
+		if (!archive->HasFile(m.name.c_str()))
+			return false;
+		int32_t error = 0;
+		size_t len = 0;
+		std::unique_ptr<byte[]> got = archive->ReadFile(m.name.c_str(), len, error);
+		if (got == nullptr || error != 0 || len != m.size)
+			return false;
+		if (std::memcmp(got.get(), m.data.get(), len) != 0)
+			return false;
+	}
+	return true;
+}
+
+#endif // !UNPACKED_SAVES
+
 void RemoveAllInvalidItems(Player &player)
 {
 	for (int i = 0; i < NUM_INVLOC; i++)
@@ -537,10 +625,12 @@ bool SaveWriter::WriteFile(const char *filename, const byte *data, size_t size)
 	const std::string path = dir_ + filename;
 	FILE *file = OpenFile(path.c_str(), "wb");
 	if (file == nullptr) {
+		write_failed_ = true; // [of] surfaced via HadWriteFailure()
 		return false;
 	}
 	if (std::fwrite(data, size, 1, file) != 1) {
 		std::fclose(file);
+		write_failed_ = true;
 		return false;
 	}
 	std::fclose(file);
@@ -591,6 +681,104 @@ const char *pfile_get_password()
 	if (gbIsSpawn)
 		return gbIsMultiplayer ? PASSWORD_SPAWN_MULTI : PASSWORD_SPAWN_SINGLE;
 	return gbIsMultiplayer ? PASSWORD_MULTI : PASSWORD_SINGLE;
+}
+
+bool pfile_migrate_save_layout(uint32_t saveNum)
+{
+#ifdef UNPACKED_SAVES
+	// Plain files in a directory: no archive tables or sectors to migrate.
+	(void)saveNum;
+	return false;
+#else
+	const std::string path = GetSavePath(saveNum);
+	if (!FileExists(path.c_str()) || !SaveUsesLegacyLayout(path))
+		return false;
+
+	// --- stage every member ------------------------------------------------
+	// Held decompressed, which is the expensive part (~3 MB for a finished
+	// Diablo save, ~4.5 MB for a completionist Hellfire one). That is why this
+	// runs from the character-select screen: no level graphics are resident, so
+	// the heap is at its emptiest. Running it during a level load -- where the
+	// monster-graphics spike already lives -- would be asking for the very OOM
+	// this save-size work exists to avoid.
+	std::vector<StagedMember> staged;
+	bool readFailed = false;
+	uint32_t liveMembers = 0;
+	{
+		std::optional<SaveReader> archive = CreateSaveReader(std::string(path));
+		if (!archive)
+			return false;
+		int32_t countError = 0;
+		liveMembers = archive->GetFileCount(countError);
+		if (countError != 0)
+			return false;
+		ForEachSaveMemberName([&](const char *name) {
+			if (readFailed || !archive->HasFile(name))
+				return;
+			int32_t error = 0;
+			size_t len = 0;
+			std::unique_ptr<byte[]> data = archive->ReadFile(name, len, error);
+			if (data == nullptr || error != 0) {
+				readFailed = true;
+				return;
+			}
+			staged.push_back({ std::string(name), std::move(data), len });
+		});
+	}
+	// Never touch the archive unless every member was recovered first. A
+	// partial read here means a partial save after the rewrite.
+	if (readFailed || staged.empty()) {
+		LogError("pfile: refusing to migrate slot {} -- could not read all members", saveNum);
+		return false;
+	}
+	// The archive itself knows how many live members it holds. If by-name
+	// staging found fewer, some member is outside ForEachSaveMemberName's
+	// list -- rewriting now would silently drop it, so leave the archive in
+	// its legacy layout instead (fully playable, just bigger).
+	if (staged.size() != liveMembers) {
+		LogError("pfile: refusing to migrate slot {} -- staged {} of {} members", saveNum, staged.size(), liveMembers);
+		return false;
+	}
+
+	// --- rewrite, then prove it round-tripped ------------------------------
+	// The staged copy is deliberately kept alive across both attempts: it is
+	// the only thing standing between a failed rewrite and a lost character.
+	//
+	// Atomicity, honestly: `recreate` discards the on-disk archive, so from
+	// here until the writer's destructor lands the header there is a torn
+	// window. On the Pocket that window is NOT the SD card -- writes go to
+	// CRAM and the host only persists CRAM->SD on its own save-writeback
+	// (menu exit / sleep), so a power cut mid-migration boots back into the
+	// untouched legacy save and simply migrates again. The exposed case is an
+	// app crash inside this function followed by a menu exit, which would
+	// persist the torn state. There is no second slot to stage into and the
+	// slot FS has no rename, so that window cannot be closed -- only kept
+	// short, which is why everything is staged and verified around it.
+	// "hero" is written first, so if a capacity abort ever cuts the loop
+	// short, the destructor still writes consistent tables and the character
+	// record itself survives.
+	for (int attempt = 0; attempt < 2; attempt++) {
+		{
+			SaveWriter writer(path, /*recreate=*/true);
+			for (const StagedMember &m : staged) {
+				if (!writer.WriteFile(m.name.c_str(), m.data.get(), m.size))
+					break;
+			}
+			if (writer.HadWriteFailure()) {
+				LogError("pfile: slot {} migration write failed (attempt {})", saveNum, attempt + 1);
+				continue;
+			}
+		}
+		if (VerifySaveMembers(path, staged)) {
+			LogVerbose("pfile: migrated slot {} to the compact layout ({} members)", saveNum, staged.size());
+			return true;
+		}
+		LogError("pfile: slot {} failed verification after migration (attempt {})", saveNum, attempt + 1);
+	}
+
+	LogError("pfile: slot {} could not be migrated; save may need to be re-saved in game", saveNum);
+	return false;
+#endif // !UNPACKED_SAVES
 }
 
 void pfile_write_hero(bool writeGameData)
@@ -654,6 +842,16 @@ bool pfile_ui_set_hero_infos(bool (*uiAddHeroInfo)(_uiheroinfo *))
 	memset(hero_names, 0, sizeof(hero_names));
 
 	for (uint32_t i = 0; i < MAX_CHARACTERS; i++) {
+		// [of] Character select is the one place with the whole heap free, so
+		// it is where saves written by older builds get rewritten into the
+		// compact layout. Returns immediately for slots that are empty or
+		// already compact, so this costs nothing after the first visit. Any
+		// failure BEFORE the rewrite starts (unreadable or unrecognized
+		// member, count mismatch) leaves the save untouched; the rewrite
+		// itself is verified and retried, and its narrow torn window is
+		// documented at the function.
+		pfile_migrate_save_layout(i);
+
 		std::optional<SaveReader> archive = OpenSaveArchive(i);
 		if (archive) {
 			PlayerPack pkplr;

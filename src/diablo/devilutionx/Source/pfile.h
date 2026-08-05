@@ -54,6 +54,15 @@ struct SaveWriter {
 
 	bool WriteFile(const char *filename, const byte *data, size_t size);
 
+	// [of] Same contract as MpqWriter::HadWriteFailure: true once any
+	// WriteFile since construction has failed. pfile_write_hero and
+	// sfile_write_stash consult it to surface "Save failed!" and to avoid
+	// clearing dirty flags; without it this configuration does not compile.
+	bool HadWriteFailure() const
+	{
+		return write_failed_;
+	}
+
 	bool HasFile(const char *path)
 	{
 		return ::devilution::FileExists((dir_ + path).c_str());
@@ -73,6 +82,7 @@ struct SaveWriter {
 
 private:
 	std::string dir_;
+	bool write_failed_ = false;
 };
 
 #else
@@ -115,6 +125,26 @@ HeroCompareResult pfile_compare_hero_demo(int demo, bool logDetails);
 #endif
 
 void sfile_write_stash();
+
+/**
+ * @brief [of] Rewrites a save written by an older build into the compact
+ * archive layout: 256/512-entry hash/block tables instead of 2048/2048, and
+ * 64 KB sectors instead of 4 KB. On the fixed 256 KB nonvolatile slot that
+ * takes a finished 16-level Hellfire save from 90% of the slot to 61%.
+ *
+ * A no-op unless the slot exists and actually uses the legacy layout (or the
+ * build uses unpacked directory saves, which have nothing to migrate). Every
+ * member is staged in memory first and the member count is cross-checked
+ * against the archive's own, so an unrecognized member refuses migration
+ * rather than being dropped; the rewrite is then verified byte-for-byte and
+ * retried once. Failures before the rewrite leave the archive untouched.
+ * Call only where the heap is quiet -- it holds the whole save decompressed
+ * while it works.
+ *
+ * @return true if the save was migrated.
+ */
+bool pfile_migrate_save_layout(uint32_t saveNum);
+
 bool pfile_ui_set_hero_infos(bool (*uiAddHeroInfo)(_uiheroinfo *));
 void pfile_ui_set_class_stats(unsigned int playerClass, _uidefaultstats *classStats);
 uint32_t pfile_ui_get_first_unused_save_num();
