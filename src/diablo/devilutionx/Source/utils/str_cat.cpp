@@ -1,5 +1,8 @@
 #include "utils/str_cat.hpp"
 
+#include <algorithm>
+#include <limits>
+
 #include <fmt/format.h>
 
 namespace devilution {
@@ -7,19 +10,30 @@ namespace {
 
 char HexDigit(uint8_t v) { return "0123456789abcdef"[v]; }
 
+// [of] fmt::format_int::size() is a pointer difference across its internal
+// 22-byte buffer. GCC 15's value-range propagation cannot prove the
+// difference non-negative, assumes it may wrap to SIZE_MAX, and flags the
+// memcpy with -Wstringop-overflow. The value is in fact bounded by the
+// widest possible rendering -- every digit plus a sign -- so clamping to
+// that constant is a runtime no-op that gives the optimizer the bound it
+// cannot infer.
+constexpr size_t MaxFormatIntSize = std::numeric_limits<unsigned long long>::digits10 + 2;
+
 } // namespace
 
 char *BufCopy(char *out, long long value)
 {
 	const fmt::format_int formatted { value };
-	std::memcpy(out, formatted.data(), formatted.size());
-	return out + formatted.size();
+	const size_t size = std::min<size_t>(formatted.size(), MaxFormatIntSize);
+	std::memcpy(out, formatted.data(), size);
+	return out + size;
 }
 char *BufCopy(char *out, unsigned long long value)
 {
 	const fmt::format_int formatted { value };
-	std::memcpy(out, formatted.data(), formatted.size());
-	return out + formatted.size();
+	const size_t size = std::min<size_t>(formatted.size(), MaxFormatIntSize);
+	std::memcpy(out, formatted.data(), size);
+	return out + size;
 }
 char *BufCopy(char *out, AsHexU8Pad2 value)
 {
