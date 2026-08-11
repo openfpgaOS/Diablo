@@ -690,6 +690,62 @@ static inline void _gpu_ring_ensure(uint32_t bytes) {
     }
 }
 
+/* ---- Non-fatal emission guards ------------------------------------
+ * The waits above are bounded but fatal: on timeout they trap, taking
+ * the whole machine down.  That is right for a genuinely wedged
+ * pipeline, but wrong when the GPU is merely paused -- the platform
+ * menu freezes scanout, so the ring stops draining while the app keeps
+ * drawing, and the core dies in a spin that would have resolved the
+ * moment the menu closed.
+ *
+ * These let a caller ask before it commits, then drop the frame
+ * instead of trapping.  Neither emits a command nor blocks
+ * unboundedly, so both stay safe to call with the GPU stopped. */
+
+/* Pure probe: true when a batch of `bytes` can be emitted right now
+ * without entering any of the trapping waits.  Plain register reads,
+ * no side effects.  Ring space only grows until we emit (the GPU is
+ * the only consumer), so a caller that probes for its whole batch up
+ * front cannot then be blocked partway through emitting it.
+ *
+ * Ring space is the ONLY gate tested, deliberately.  It is tempting to
+ * also reject on GPU_STATUS_DMA_BUSY / DMA_DESC_FULL since the
+ * emission path has waits on both, but those are ordinary steady-state
+ * conditions: the descriptor FIFO is 2 deep and the SDK stages through
+ * two batch buffers precisely so a DMA can be in flight while the CPU
+ * fills the other one.  Rejecting on them makes this probe report
+ * "stalled" during perfectly healthy rendering.  Both waits are also
+ * downstream of ring space -- the DMA drains into the ring, so it
+ * completes whenever the ring has room, and _gpu_ring_ensure()'s spin
+ * is the one that actually goes fatal.  Gate on the root cause. */
+static inline int of_gpu_can_emit(uint32_t bytes) {
+    if (_gpu_batch_buf == NULL)
+        return 0;
+    if (bytes > (OF_GPU_RING_SIZE - 4u))
+        return 0;
+    return _gpu_ring_free_now() >= bytes;
+}
+
+/* Bounded, non-fatal ring reserve: spins at most `spin_limit`
+ * iterations waiting for `bytes` of ring space, returning 0 on timeout
+ * rather than trapping.  Deliberately does NOT flush staged commands
+ * the way _gpu_ring_ensure() does -- this answers "has the GPU drained
+ * enough to take more", and the flush path runs the fatal DMA wait. */
+static inline int of_gpu_try_reserve_bytes(uint32_t bytes,
+                                           uint32_t spin_limit) {
+    if (bytes > (OF_GPU_RING_SIZE - 4u))
+        return 0;
+    uint32_t ring_free = _gpu_ring_free_now();
+    _gpu_note_ring_free(ring_free);
+    while (ring_free < bytes) {
+        if (spin_limit-- == 0u)
+            return 0;
+        ring_free = _gpu_ring_free_now();
+        _gpu_note_ring_free(ring_free);
+    }
+    return 1;
+}
+
 static inline void _gpu_stream_reserve_words(uint32_t words) {
     if (words == 0)
         return;
@@ -2247,6 +2303,8 @@ static inline uint32_t of_gpu_fence(void)                                 { retu
 static inline uint32_t of_gpu_submit(void)                                { return 0; }
 static inline int      of_gpu_fence_reached(uint32_t t)                   { (void)t; return 1; }
 static inline void     of_gpu_wait(uint32_t t)                            { (void)t; }
+static inline int      of_gpu_can_emit(uint32_t b)                        { (void)b; return 1; }
+static inline int      of_gpu_try_reserve_bytes(uint32_t b, uint32_t s)   { (void)b; (void)s; return 1; }
 static inline void     of_gpu_finish(void)                                {}
 static inline void     of_gpu_prepare_framebuffer_for_cpu(void)           {}
 static inline uint32_t of_gpu_flip_to(int idx)                            { (void)idx; return 0; }

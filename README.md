@@ -74,6 +74,26 @@ that slot. From then on the same `L1 + face` chord casts it instantly.
 **Select** and use the **d-pad** to move the cursor; **Select + L1** is a
 left click, **Select + R1** a right click.
 
+### Mouse (Dock)
+
+Plug a USB mouse into the **Analogue Pocket Dock** and the game picks it up
+automatically — no setting to change. Diablo's original point-and-click
+controls come back: **left click** to move, attack and pick things up,
+**right click** to cast the active spell, and click straight on inventory,
+belt and panel buttons.
+
+| Input | Action |
+|---|---|
+| **Move** | Move the cursor (menus included) |
+| **Left click** | Move / attack / talk / pick up / place the held item |
+| **Right click** | Cast the active spell |
+
+The cursor appears the moment you move the mouse; the controller keeps
+working the whole time, and both drive the same on-screen cursor, so you can
+switch back and forth mid-fight. Plugging or unplugging while the game is
+running is fine. The scroll wheel is not reported by the dock, so keep using
+the d-pad (or the on-screen arrows) to page through stores and the quest log.
+
 ### In the menus
 
 | Input | Action |

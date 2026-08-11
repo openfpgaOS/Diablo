@@ -840,6 +840,14 @@ static Uint8 g_keystate[SDL_NUM_SCANCODES];
 static Uint32 g_prev_buttons;
 static int g_mouse_x, g_mouse_y;
 static Uint32 g_mouse_buttons;
+/* Dock mouse (OF_INPUT_TYPE_MOUSE, APF player 4). Absent on the bare
+ * handheld, hot-pluggable via the dock, so every field below is only
+ * meaningful while g_mouse_present -- see mouse_refresh(). */
+static int g_mouse_present;
+static int g_mouse_seen_once;
+static Uint32 g_mouse_of_level;                  /* last firmware button level */
+static Uint32 g_mouse_pend_down, g_mouse_pend_up; /* edges not yet emitted */
+static int g_mouse_pend_xrel, g_mouse_pend_yrel;  /* motion not yet emitted */
 static int g_text_input;
 
 /* Simple ring of synthesized events. */
@@ -869,6 +877,101 @@ static SDL_GameControllerButton of_to_cbtn(uint32_t bit) {
 	default: return SDL_CONTROLLER_BUTTON_INVALID;
 	}
 }
+/* OF mouse button index (0=L 1=R 2=M 3/4=extra) -> SDL button number.
+ * Note the order difference: SDL numbers middle 2 and right 3. */
+static const Uint8 of_to_mbtn[5] = {
+	SDL_BUTTON_LEFT, SDL_BUTTON_RIGHT, SDL_BUTTON_MIDDLE, SDL_BUTTON_X1, SDL_BUTTON_X2,
+};
+
+/* Dock mouse -> SDL pointer model. The firmware read is CONSUMING (dx/dy
+ * and the button edge masks clear on read), so this must stay the ONLY
+ * caller of of_input_mouse_state(); every SDL entry point shares the state
+ * cached here (cursor, button mask, pending events). State only -- events
+ * are parked in g_mouse_pend_* for mouse_flush_events(), because a getter
+ * that pushed events could keep the queue permanently non-empty and starve
+ * the pad synthesis in SDL_PollEvent().
+ *
+ * With no mouse attached this is a no-op and g_mouse_buttons stays 0, so
+ * the handheld keeps exactly the old gamepad-only behavior. */
+static void mouse_refresh(void) {
+	of_mouse_state_t ms;
+	of_input_mouse_state(&ms);
+	if (!ms.present) {
+		if (g_mouse_present) {
+			/* Hot-unplug: the firmware latched release edges for whatever
+			 * was held into this final read; without replaying the level
+			 * mask too, DevilutionX would see the button held forever. */
+			g_mouse_pend_down |= ms.buttons_pressed;
+			g_mouse_pend_up   |= ms.buttons_released | g_mouse_of_level;
+			g_mouse_of_level = 0;
+			g_mouse_buttons = 0;
+			g_mouse_present = 0;
+			printf("[of] mouse: disconnected\n");
+		}
+		return;
+	}
+	if (!g_mouse_present) {
+		g_mouse_present = 1;
+		printf("[of] mouse: connected (docked=%d)\n", of_input_is_docked());
+		/* Park the cursor mid-screen on the first connect so the first
+		 * physical movement does not start from the top-left corner. No
+		 * event is emitted here: docking must not by itself flip
+		 * DevilutionX's ControlMode to KeyboardAndMouse -- only actual
+		 * mouse input should. Later re-connects keep the cursor where
+		 * the game left it (SetCursorPos warps track g_mouse_x/y). */
+		if (!g_mouse_seen_once) {
+			g_mouse_seen_once = 1;
+			int w = g_window.w, h = g_window.h;
+			if (w <= 0 || h <= 0) fb_dims(&w, &h);
+			g_mouse_x = w / 2; g_mouse_y = h / 2;
+		}
+	}
+	g_mouse_pend_down |= ms.buttons_pressed;
+	g_mouse_pend_up   |= ms.buttons_released;
+	g_mouse_of_level = ms.buttons;
+	Uint32 btns = 0;
+	for (int i = 0; i < 5; i++)
+		if (ms.buttons & (1u << i)) btns |= SDL_BUTTON(of_to_mbtn[i]);
+	g_mouse_buttons = btns;
+	if (ms.dx || ms.dy) {
+		int w = g_window.w, h = g_window.h;
+		if (w <= 0 || h <= 0) fb_dims(&w, &h);
+		g_mouse_x += ms.dx; g_mouse_y += ms.dy;
+		if (g_mouse_x < 0) g_mouse_x = 0; if (g_mouse_x >= w) g_mouse_x = w - 1;
+		if (g_mouse_y < 0) g_mouse_y = 0; if (g_mouse_y >= h) g_mouse_y = h - 1;
+		g_mouse_pend_xrel += ms.dx; g_mouse_pend_yrel += ms.dy;
+	}
+}
+
+/* Emit the parked mouse events. Pump-only (see mouse_refresh). Nothing is
+ * pushed while the mouse sits still, so `while (SDL_PollEvent())` drain
+ * loops in the menus still terminate. */
+static void mouse_flush_events(void) {
+	if (g_mouse_pend_xrel || g_mouse_pend_yrel) {
+		SDL_Event e{}; e.type=SDL_MOUSEMOTION; e.motion.state=g_mouse_buttons;
+		e.motion.x=g_mouse_x; e.motion.y=g_mouse_y;
+		e.motion.xrel=g_mouse_pend_xrel; e.motion.yrel=g_mouse_pend_yrel; evq_push(&e);
+		g_mouse_pend_xrel = g_mouse_pend_yrel = 0;
+	}
+	Uint32 down = g_mouse_pend_down, up = g_mouse_pend_up;
+	g_mouse_pend_down = g_mouse_pend_up = 0;
+	for (int i = 0; i < 5; i++) {
+		Uint32 mask = 1u << i;
+		if (!((down | up) & mask)) continue;
+		SDL_Event e{};
+		e.button.button=of_to_mbtn[i]; e.button.clicks=1; e.button.x=g_mouse_x; e.button.y=g_mouse_y;
+		/* Both edges in one interval: order by the final level, so a
+		 * release+re-press ends DOWN and a sub-frame click ends UP. */
+		if ((down & mask) && (g_mouse_of_level & mask)) {
+			if (up & mask) { e.type=SDL_MOUSEBUTTONUP; e.button.state=SDL_RELEASED; evq_push(&e); }
+			e.type=SDL_MOUSEBUTTONDOWN; e.button.state=SDL_PRESSED; evq_push(&e);
+		} else {
+			if (down & mask) { e.type=SDL_MOUSEBUTTONDOWN; e.button.state=SDL_PRESSED; evq_push(&e); }
+			if (up & mask)   { e.type=SDL_MOUSEBUTTONUP;   e.button.state=SDL_RELEASED; evq_push(&e); }
+		}
+	}
+}
+
 static int g_prev_axes[4];   /* last emitted LX,LY,RX,RY (deadzone-gated) */
 static void poll_and_synthesize(void) {
 	of_input_poll();
@@ -899,6 +1002,8 @@ static void poll_and_synthesize(void) {
 		SDL_Event e{}; e.type=SDL_CONTROLLERAXISMOTION; e.caxis.axis=(Uint8)axes[i].ax; e.caxis.value=(Sint16)axes[i].v; evq_push(&e);
 	}
 	g_prev_buttons = st.buttons;
+	mouse_refresh();
+	mouse_flush_events();
 }
 
 int SDL_PollEvent(SDL_Event *event) {
@@ -949,10 +1054,33 @@ SDL_bool SDL_HasScreenKeyboardSupport(void){ return SDL_FALSE; }
 /* ===================================================================== */
 /* Mouse / cursor                                                         */
 /* ===================================================================== */
-Uint32 SDL_GetMouseState(int *x, int *y){ if(x)*x=g_mouse_x; if(y)*y=g_mouse_y; return g_mouse_buttons; }
+/* Refreshes first so pollers that bypass the event pump (movie.cpp reads
+ * the pointer straight from here during cutscenes) still see live deltas;
+ * any events that refresh generates stay parked until the next pump. */
+Uint32 SDL_GetMouseState(int *x, int *y){ mouse_refresh(); if(x)*x=g_mouse_x; if(y)*y=g_mouse_y; return g_mouse_buttons; }
 Uint32 SDL_GetGlobalMouseState(int *x, int *y){ return SDL_GetMouseState(x,y); }
-void SDL_WarpMouseInWindow(SDL_Window *win, int x, int y){ (void)win; g_mouse_x=x; g_mouse_y=y; }
-void SDL_WarpMouse(Uint16 x, Uint16 y){ g_mouse_x=x; g_mouse_y=y; }
+/* Real SDL2 synthesizes a motion event for a warp, and DevilutionX relies
+ * on it: SetCursorPos() (diablo.cpp) assigns MousePosition directly only
+ * while ControlDevice is a gamepad -- once a real mouse has been used it
+ * switches to warping and expects the event to carry the position back.
+ * Without this the right-stick cursor and FocusOnInventory() would stop
+ * moving the pointer the moment the player touched the mouse. Unreachable
+ * on a mouse-less handheld (nothing there ever makes ControlDevice
+ * KeyboardAndMouse), so gamepad-only behavior is unchanged. */
+static void warp_mouse(int x, int y) {
+	int w = g_window.w, h = g_window.h;
+	if (w <= 0 || h <= 0) fb_dims(&w, &h);
+	if (x < 0) x = 0; if (x >= w) x = w - 1;
+	if (y < 0) y = 0; if (y >= h) y = h - 1;
+	int dx = x - g_mouse_x, dy = y - g_mouse_y;
+	g_mouse_x = x; g_mouse_y = y;
+	if (!dx && !dy) return;
+	SDL_Event e{}; e.type=SDL_MOUSEMOTION; e.motion.state=g_mouse_buttons;
+	e.motion.x=g_mouse_x; e.motion.y=g_mouse_y; e.motion.xrel=dx; e.motion.yrel=dy;
+	evq_push(&e);
+}
+void SDL_WarpMouseInWindow(SDL_Window *win, int x, int y){ (void)win; warp_mouse(x,y); }
+void SDL_WarpMouse(Uint16 x, Uint16 y){ warp_mouse(x,y); }
 int SDL_ShowCursor(int toggle){ (void)toggle; return SDL_DISABLE; }
 int SDL_CaptureMouse(SDL_bool e){ (void)e; return 0; }
 SDL_Cursor *SDL_CreateCursor(const Uint8*d,const Uint8*m,int w,int h,int hx,int hy){ (void)d;(void)m;(void)w;(void)h;(void)hx;(void)hy; return (SDL_Cursor*)1; }
@@ -1084,7 +1212,7 @@ char *SDL_GetBasePath(void){ of_platform_init(); return strdup(of_platform_base_
 char *SDL_GetPrefPath(const char *org, const char *app){ (void)org;(void)app; of_platform_init(); return strdup(of_platform_pref_path()); }
 int SDL_GetCPUCount(void){ return 1; }
 int SDL_GetSystemRAM(void){ const struct of_capabilities*c=of_get_caps(); return c?(int)(c->sdram_size/(1024*1024)):64; }
-void SDL_WarpMouseGlobal(int x, int y){ g_mouse_x=x; g_mouse_y=y; }
+void SDL_WarpMouseGlobal(int x, int y){ warp_mouse(x,y); }
 int SDL_EnableUNICODE(int e){ (void)e; return 0; }
 
 /* Audio (NOSOUND build path does not call these; provided for link safety) */

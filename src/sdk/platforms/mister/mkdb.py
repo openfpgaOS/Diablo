@@ -216,6 +216,33 @@ def build_db(args):
             entry["reboot"] = True
         files[sd_path] = entry
 
+    # ── launchers ALSO at the menu path ─────────────────────────────────
+    # The staged tree maps under --sd-prefix (games/OpenfpgaOS), but MiSTer's
+    # menu only browses top-level _* trees, so launchers delivered ONLY there
+    # are invisible and the user has no way to start the game.  Publish a
+    # second copy at --menu-dir.  The prefix underscore is load-bearing and the
+    # folder is FLAT: the stock layout is _@Homebrew/_GAMEBOY/*.mgl, and a
+    # non-underscore subfolder is not navigable (HW-confirmed 2026-08-09).
+    # The games/ copies stay: setup.sh republishes from there after an update.
+    if args.menu_dir:
+        validate_root(args.menu_dir.strip("/") + "/x.mgl", "menu dir")
+        for sd_path in sorted(files_local):
+            if not sd_path.lower().endswith(".mgl"):
+                continue
+            menu_path = args.menu_dir.strip("/") + "/" + os.path.basename(sd_path)
+            abspath = files_local[sd_path]
+            entry = {"hash": md5_of(abspath), "size": os.path.getsize(abspath)}
+            if args.url_mode == "flat":
+                entry["url"] = base_url + os.path.basename(sd_path)
+            else:
+                # base mode derives the URL from the sd_path, but this copy does
+                # not exist at menu_path in the hosted tree -- point it at the
+                # staged original instead.
+                entry["url"] = base_url + sd_path
+            files[menu_path] = entry
+            for fdir in ancestor_folders(menu_path):
+                folders.add(fdir)
+
     if args.url_mode == "base" and files and not base_url:
         raise SystemExit("mkdb: local files present but no --base-url (needed for base_files_url).")
 
@@ -282,6 +309,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Generate a MiSTer Downloader custom database (.json.zip).")
     ap.add_argument("--staging", required=True, help="dir of shippable files (its tree maps under --sd-prefix)")
     ap.add_argument("--sd-prefix", default="", help="on-SD path prefix relative to /media/fat (e.g. games/OpenfpgaOS)")
+    ap.add_argument("--menu-dir", default="", help="also publish *.mgl here so MiSTer's menu can see them (e.g. _Computer/_OpenfpgaOS)")
     ap.add_argument("--base-url", default="", help="base_files_url: where the staged tree is hosted")
     ap.add_argument("--db-id", required=True, help="db_id == the downloader.ini [section] (owner/name); never change once published")
     ap.add_argument("--external", default="", help="external_files.csv of freeware entries (sd_path,url,size,md5,tags)")

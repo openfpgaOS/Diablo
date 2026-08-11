@@ -78,8 +78,62 @@ else
     warn "no saves template at $SAVES_SRC — cannot seed saves image (old package?)"
 fi
 
-# ── 2. Inject user wads into the read-only boot shell ───────────────────────
-[ -d "$WADS" ] || die "no wads dir at $WADS — create it and drop your IWADs there"
+
+# ── 2. Publish the launchers where the MiSTer menu can actually see them ──
+# MiSTer's main menu browses the top-level _* trees ONLY.  The package unzips
+# its .mgl launchers into games/OpenfpgaOS/, which the menu never scans — so
+# the documented last step ("pick a .mgl from the menu") was impossible as
+# written, and a first-time user has no way to start the game.  Publish this
+# game's launchers under the core's own _Computer entry, nested per game so
+# several installed games stay navigable:
+#     /media/fat/_Computer/_OpenfpgaOS/<Instance>.mgl
+#
+# COPY, never move: the originals stay in games/OpenfpgaOS/ so a package
+# update rewrites them in place and a re-run of this script republishes.
+# Running from _Computer is safe — mkmgl.sh emits games-RELATIVE <file> paths
+# and MiSTer resolves those against the core's games dir, not against the
+# .mgl's own location (see the PATH RESOLUTION note in mkmgl.sh); that is also
+# why the S1 saves mount is written absolute.
+# A launcher belongs to this game iff it mounts <Game>/boot.vhd — the flat
+# games/OpenfpgaOS/ dir holds every installed game's launchers together.
+# UNDERSCORE PREFIX IS LOAD-BEARING and the folder is FLAT.  MiSTer only
+# descends into subdirectories of a _* tree when they are THEMSELVES
+# underscore-prefixed -- the stock layout is _@Homebrew/_GAMEBOY/*.mgl, one
+# level, launchers directly inside.  A plain "OpenfpgaOS/" folder is not
+# navigable: the menu shows the .rbf cores and nothing else, which reads to
+# the user as "it just loads the core, there are no options" (HW-confirmed
+# 2026-08-09).  A second nested level (_OpenfpgaOS/_Doom/) is UNVERIFIED --
+# do not add one without checking it on hardware first.
+MENU_DIR="/media/fat/_Computer/_OpenfpgaOS"
+published=0
+if mkdir -p "$MENU_DIR" 2>/dev/null; then
+    for m in "$ROOT"/*.mgl; do
+        [ -f "$m" ] || continue
+        grep -q "\"$GAME/boot.vhd\"" "$m" 2>/dev/null || continue
+        cp -f "$m" "$MENU_DIR/" && published=$((published+1))
+    done
+    sync
+    if [ "$published" -gt 0 ]; then
+        ok "$published launcher(s) published to $MENU_DIR"
+    else
+        warn "no $GAME launchers found in $ROOT — no menu entries created"
+    fi
+else
+    warn "could not create $MENU_DIR — launch a .mgl from $ROOT instead"
+fi
+
+# ── 3. Inject user wads into the read-only boot shell ───────────────────────
+# Missing wads/ is NOT fatal.  It used to die() here, which meant a card
+# without that directory never reached step 2 above and got NO menu entries --
+# the user saw nothing to launch and no explanation.  Create it, warn, and
+# skip only the injection.
+if [ ! -d "$WADS" ]; then
+    mkdir -p "$WADS" 2>/dev/null
+    warn "no wads dir — created $WADS; drop your IWADs there and re-run"
+    ok "$GAME setup done: launchers published, no wads injected"
+    echo "Launch from the MiSTer menu: Computer -> OpenfpgaOS -> $GAME -> <instance>." | tee -a "$LOG"
+    exit 0
+fi
 
 mkdir -p "$MNT"
 umount "$MNT" 2>/dev/null || true
@@ -113,5 +167,7 @@ umount "$MNT" 2>/dev/null
 rmdir "$MNT" 2>/dev/null || true
 
 [ "$empty" = 1 ] && warn "no wads found in $WADS — drop your IWADs there and re-run"
+
+
 ok "$GAME setup done: $copied injected, $skipped already current"
-echo "Reload the openfpgaOS core and launch a $GAME .mgl." | tee -a "$LOG"
+echo "Launch from the MiSTer menu: Computer -> OpenfpgaOS -> $GAME -> <instance>." | tee -a "$LOG"
