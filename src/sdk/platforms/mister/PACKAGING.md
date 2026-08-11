@@ -82,9 +82,24 @@ re-sync can't clobber injected wads; everything else defaults to
 
 ## 2. Publishing
 
-Host the staged tree at `MISTER_DB_BASE_URL` and `<game>.json.zip` at
-`MISTER_DB_URL`. `MISTER_DB_ID` (e.g. `thinkelastic/openfpgaos-doom`) is the
-Downloader database key — **never change it once published**.
+`make release CORE=<game> TARGET=mister` attaches everything to a GitHub
+release: the bundle zip, `<game>.json.zip`, the ini snippet, and every file the
+DB references as a **flat asset**.
+
+Hosting is `https://github.com/openfpgaOS/<Repo>/releases/latest/download/`:
+
+- `releases/latest/download/` always resolves to the newest release, so a
+  user's `downloader.ini` never goes stale and there is no dist branch to push.
+- Release assets have a 2 GB/file limit. `raw.githubusercontent` refuses
+  anything over 100 MB, and these bundles ship multi-hundred-MB `.vhd` images —
+  which is why the DB is generated `--url-mode flat` (every entry gets an
+  explicit `url = <base>/<basename>`) instead of `base_files_url + path`.
+- Flat hosting requires unique basenames within a bundle. They are unique
+  today; a collision would silently serve the wrong file, so check when adding
+  files.
+
+`MISTER_DB_ID` (e.g. `openfpgaOS/openfpgaos-doom`) is the Downloader database
+key — **never change it once published**.
 
 ## 3. Installing on the device
 
