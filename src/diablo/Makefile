@@ -302,8 +302,33 @@ game-dist: app.elf
 copy: all
 	@MISTER_IP="$(MISTER_IP)" $(SDK)/platforms/$(TARGET)/copy.sh "$(APP)" "app.elf"
 
+
+# ── MiSTer Downloader DB (same scheme as the Doom repo) ──────────────
+MISTER_DB_ID   ?= openfpgaOS/openfpgaos-diablo
+MISTER_DB_VER  := $(shell python3 -c "import glob,json;print(json.load(open(sorted(glob.glob('$(DIST)/Cores/*/core.json'))[0]))['core']['metadata']['version'])" 2>/dev/null || echo 0.0.0)
+# Asset URLs pin to this release's own immutable tag; the DB itself is
+# committed and served via raw — a stable db_url immune to the per-repo
+# releases/latest pointer.
+MISTER_DB_BASE_URL ?= https://github.com/openfpgaOS/Diablo/releases/download/diablo-mister-v$(MISTER_DB_VER)/
+MISTER_DB_URL      ?= https://raw.githubusercontent.com/openfpgaOS/Diablo/main/releases/mister/diablo.json.zip
+MISTER_DB          = $(ROOT)/releases/mister/$(APP).json.zip
+MISTER_DB_INI      = $(ROOT)/releases/mister/$(APP).downloader.ini
+
+package: export ASSET_LABEL    = the game MPQs
+package: export ASSET_EXAMPLES = DIABDAT.mpq (and optional hellfire.mpq)
+ifeq ($(TARGET),mister)
+package: game-dist release
+	@$(ROOT)/scripts/package.sh $(APP)
+	@$(SDK)/platforms/mister/mkdb.py \
+	    --staging "$(GAME_STAGE)" --sd-prefix "games/OpenfpgaOS" \
+	    --menu-dir "_Computer/_OpenfpgaOS/_$(GAME)" \
+	    --base-url "$(MISTER_DB_BASE_URL)" --url-mode flat --db-id "$(MISTER_DB_ID)" \
+	    --db-url "$(MISTER_DB_URL)" \
+	    --output "$(MISTER_DB)" --ini-out "$(MISTER_DB_INI)"
+else
 package: release
 	@$(ROOT)/scripts/package.sh $(APP)
+endif
 
 debug: all
 	@$(ROOT)/scripts/debug.sh "$$(ls -d $(OUT)/Assets/*/common 2>/dev/null)/$(APP).elf"

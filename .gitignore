@@ -8,7 +8,13 @@ app_pc
 save_*.bin
 build/
 .obj/
-releases/
+# Downloader DBs are committed and served via raw.githubusercontent — a
+# stable per-game db_url independent of the repo-wide releases/latest pointer.
+releases/*
+!releases/mister/
+releases/mister/*
+!releases/mister/*.json.zip
+!releases/mister/*.downloader.ini
 src/tools/phdp/phdp
 src/tools/phdp/phdpd
 
