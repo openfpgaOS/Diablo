@@ -90,11 +90,13 @@ NV_SAVE_SLOTS=10      # slot_0..slot_9.sav (must match mkimage.c NV_SAVE_SLOTS)
 # ── Options ──────────────────────────────────────────────────────────
 WITH_WADS=0
 NO_ELF=0
+NO_SAVES=0
 SAVES_OUT=""
 while [[ "$1" == --* ]]; do
     case "$1" in
         --with-wads) WITH_WADS=1; shift ;;
         --no-elf)    NO_ELF=1; shift ;;
+        --no-saves)  NO_SAVES=1; shift ;;
         --saves-out) SAVES_OUT="$2"; shift 2 ;;
         *)           fail "unknown option: $1" ;;
     esac
@@ -323,6 +325,14 @@ mkdir -p "$(dirname "$IMAGE")"
 ok "boot shell (S0): $IMAGE (${BOOT_MB} MB, common only, $mode)"
 
 # S1 saves shell — per-instance /<Game>/<Instance>/{cfg,slot_N.sav} only.
-mkdir -p "$(dirname "$SAVES_OUT")"
-"$MKIMAGE" --no-default-nv "$SAVES_OUT" "$SAVES_MB" "${NV_SPECS[@]}"
-ok "saves shell (S1): $SAVES_OUT (${SAVES_MB} MB, ${#INSTANCES[@]} instances, $NV_TOTAL slots)"
+# --no-saves skips it: a game shipping several per-variant BOOT images in one
+# folder (Wolfenstein) emits the shared saves shell from ONE mkgame call (the
+# one holding every instance ini) and suppresses it on the others, so a later
+# single-instance call cannot clobber the all-instance shell.
+if [[ "$NO_SAVES" == 1 ]]; then
+    ok "saves shell (S1): skipped (--no-saves)"
+else
+    mkdir -p "$(dirname "$SAVES_OUT")"
+    "$MKIMAGE" --no-default-nv "$SAVES_OUT" "$SAVES_MB" "${NV_SPECS[@]}"
+    ok "saves shell (S1): $SAVES_OUT (${SAVES_MB} MB, ${#INSTANCES[@]} instances, $NV_TOTAL slots)"
+fi

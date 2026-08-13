@@ -83,6 +83,13 @@ SAVES_DIR="/media/fat/saves/OpenfpgaOS"
 SINGLE=0
 [[ "$1" == "--single" ]] && { SINGLE=1; shift; }
 
+# Optional: --boot <image-name> overrides the S0 image the launchers mount
+# (default boot.vhd).  Lets several per-variant boot images share ONE game
+# folder: mkmgl runs once per variant with that variant's ini dir + image.
+BOOT_IMG="boot.vhd"
+if [[ "$1" == "--boot" ]]; then
+    BOOT_IMG="$2"; shift 2
+fi
 GAME="$1"
 INIS_DIR="$2"
 OUT_DIR="$3"
@@ -108,13 +115,13 @@ emit_mgl() {
     {
         printf '<mistergamedescription>\n'
         printf '\t<rbf>%s</rbf>\n' "$RBF"
-        printf '\t<file delay="1" type="s" index="0" path="%s/boot.vhd"/>\n' "$GAME"
+        printf '\t<file delay="1" type="s" index="0" path="%s/%s"/>\n' "$GAME" "$BOOT_IMG"
         printf '\t<file delay="2" type="s" index="1" path="%s/%s.vhd"/>\n' "$SAVES_DIR" "$GAME"
         printf '\t<file delay="3" type="f" index="2" path="%s/%s"/>\n' "$GAME" "$elf_"
         printf '\t<file delay="4" type="f" index="1" path="%s/%s"/>\n' "$GAME" "$base_"
         printf '</mistergamedescription>\n'
     } > "$OUT_DIR/$stem_.mgl"
-    ok "$stem_.mgl -> S0 $GAME/boot.vhd + S1 $SAVES_DIR/$GAME.vhd + F2(elf) $GAME/$elf_ + F1(ini) $GAME/$base_"
+    ok "$stem_.mgl -> S0 $GAME/$BOOT_IMG + S1 $SAVES_DIR/$GAME.vhd + F2(elf) $GAME/$elf_ + F1(ini) $GAME/$base_"
 }
 
 INIS=("$INIS_DIR"/*.ini)
@@ -138,7 +145,7 @@ if [[ "$SINGLE" == 1 ]]; then
     {
         printf '<mistergamedescription>\n'
         printf '\t<rbf>%s</rbf>\n' "$RBF"
-        printf '\t<file delay="1" type="s" index="0" path="%s/boot.vhd"/>\n' "$GAME"
+        printf '\t<file delay="1" type="s" index="0" path="%s/%s"/>\n' "$GAME" "$BOOT_IMG"
         printf '\t<file delay="2" type="s" index="1" path="%s/%s.vhd"/>\n' "$SAVES_DIR" "$GAME"
         printf '\t<file delay="3" type="f" index="2" path="%s/%s"/>\n' "$GAME" "$elf"
     } > "$OUT_DIR/$GAME.mgl"

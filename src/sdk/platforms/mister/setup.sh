@@ -35,6 +35,12 @@
 set -u
 
 GAME_DEFAULT="@GAME@"
+# Optional extension->image routing, baked at package time like GAME_DEFAULT.
+# Space-separated "ext:image" pairs (e.g. "wl6:boot-wl6.vhd sod:boot-sod.vhd")
+# for games shipping one boot image per data variant in a single folder;
+# empty = classic single boot.vhd behavior.
+BOOT_IMAGE_MAP="@BOOT_IMAGE_MAP@"
+case "$BOOT_IMAGE_MAP" in @*) BOOT_IMAGE_MAP="" ;; esac
 GAME="${1:-${GAME:-$GAME_DEFAULT}}"
 
 ROOT=/media/fat/games/OpenfpgaOS
@@ -60,7 +66,15 @@ esac
 
 : > "$LOG"
 echo "openfpgaOS setup — $GAME — $(date)" | tee -a "$LOG"
-[ -f "$VHD" ]  || die "no image at $VHD — unzip the game package into $ROOT first"
+if [ -n "$BOOT_IMAGE_MAP" ]; then
+    found=0
+    for pair in $BOOT_IMAGE_MAP; do
+        [ -f "$GAME_DIR/${pair##*:}" ] && found=1
+    done
+    [ "$found" = 1 ] || die "no boot images in $GAME_DIR — unzip the game package into $ROOT first"
+else
+    [ -f "$VHD" ] || die "no image at $VHD — unzip the game package into $ROOT first"
+fi
 
 # ── 1. Seed the writable saves image (first install only, NEVER overwrite) ──
 if [ -f "$SAVES_SRC" ]; then
@@ -94,7 +108,8 @@ fi
 # and MiSTer resolves those against the core's games dir, not against the
 # .mgl's own location (see the PATH RESOLUTION note in mkmgl.sh); that is also
 # why the S1 saves mount is written absolute.
-# A launcher belongs to this game iff it mounts <Game>/boot.vhd — the flat
+# A launcher belongs to this game iff it mounts <Game>/boot*.vhd (plain
+# boot.vhd or a per-variant boot-<ext>.vhd) — the flat
 # games/OpenfpgaOS/ dir holds every installed game's launchers together.
 #
 # UNDERSCORE PREFIX IS LOAD-BEARING at EVERY level.  MiSTer only descends into
@@ -120,7 +135,7 @@ published=0
 if mkdir -p "$MENU_DIR" 2>/dev/null; then
     for m in "$ROOT"/*.mgl; do
         [ -f "$m" ] || continue
-        grep -q "\"$GAME/boot.vhd\"" "$m" 2>/dev/null || continue
+        grep -q "\"$GAME/boot[^\"]*\.vhd\"" "$m" 2>/dev/null || continue
         cp -f "$m" "$MENU_DIR/" && published=$((published+1))
     done
     sync
@@ -157,35 +172,49 @@ if [ ! -d "$WADS" ]; then
     exit 0
 fi
 
-mkdir -p "$MNT"
-umount "$MNT" 2>/dev/null || true
-mount -o loop,rw "$VHD" "$MNT" || die "loop-mount of $VHD failed"
-
-DEST="$MNT/$GAME/common"
-[ -d "$DEST" ] || die "image has no /$GAME/common (wrong/old boot.vhd?)"
+# Which image does a wad belong in?  With BOOT_IMAGE_MAP set, route by
+# extension; unmapped extensions fall back to boot.vhd (if present).
+image_for() {
+    ext="$(echo "${1##*.}" | tr "[:upper:]" "[:lower:]")"
+    for pair in $BOOT_IMAGE_MAP; do
+        [ "$ext" = "${pair%%:*}" ] && { echo "${pair##*:}"; return; }
+    done
+    echo "boot.vhd"
+}
 
 copied=0; skipped=0; empty=1
-for w in "$WADS"/*; do
-    [ -f "$w" ] || continue
-    b="$(basename "$w")"
-    case "$b" in ._*) continue ;; esac      # AppleDouble junk
-    empty=0
-    d="$DEST/$b"
-    # Idempotent: skip if an identically-sized copy is already inside.
-    if [ -f "$d" ] && [ "$(stat -c%s "$w")" = "$(stat -c%s "$d")" ]; then
-        skipped=$((skipped+1))
-        continue
-    fi
-    if cp "$w" "$d"; then
-        ok "injected $b ($(stat -c%s "$w") B)"
-        copied=$((copied+1))
-    else
-        warn "failed to copy $b"
-    fi
+IMAGES="boot.vhd"
+[ -n "$BOOT_IMAGE_MAP" ] && IMAGES="$(for pair in $BOOT_IMAGE_MAP; do echo "${pair##*:}"; done | sort -u)"
+mkdir -p "$MNT"
+for img in $IMAGES; do
+    IVHD="$GAME_DIR/$img"
+    [ -f "$IVHD" ] || { warn "$img not found — skipping"; continue; }
+    umount "$MNT" 2>/dev/null || true
+    mount -o loop,rw "$IVHD" "$MNT" || die "loop-mount of $IVHD failed"
+    DEST="$MNT/$GAME/common"
+    [ -d "$DEST" ] || die "image $img has no /$GAME/common (wrong/old shell?)"
+    for w in "$WADS"/*; do
+        [ -f "$w" ] || continue
+        b="$(basename "$w")"
+        case "$b" in ._*) continue ;; esac      # AppleDouble junk
+        empty=0
+        [ "$(image_for "$b")" = "$img" ] || continue
+        d="$DEST/$b"
+        # Idempotent: skip if an identically-sized copy is already inside.
+        if [ -f "$d" ] && [ "$(stat -c%s "$w")" = "$(stat -c%s "$d")" ]; then
+            skipped=$((skipped+1))
+            continue
+        fi
+        if cp "$w" "$d"; then
+            ok "injected $b -> $img ($(stat -c%s "$w") B)"
+            copied=$((copied+1))
+        else
+            warn "failed to copy $b"
+        fi
+    done
+    sync
+    umount "$MNT" 2>/dev/null
 done
-
-sync
-umount "$MNT" 2>/dev/null
 rmdir "$MNT" 2>/dev/null || true
 
 [ "$empty" = 1 ] && warn "no wads found in $WADS — drop your IWADs there and re-run"
