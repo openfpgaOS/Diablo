@@ -43,7 +43,29 @@ BOOT_IMAGE_MAP="@BOOT_IMAGE_MAP@"
 case "$BOOT_IMAGE_MAP" in @*) BOOT_IMAGE_MAP="" ;; esac
 GAME="${1:-${GAME:-$GAME_DEFAULT}}"
 
+# Where the games tree lives.  MiSTer resolves games-relative paths against
+# the first storage that has one, in a fixed priority (USB before network
+# before SD) — mirror that search so setup works wherever the Downloader's
+# storage_priority put the games:
+# https://mister-devel.github.io/MkDocs_MiSTer/cores/paths/#path-priority
+MEDIA_PATHS=(
+  '/media/usb0'
+  '/media/usb1'
+  '/media/usb2'
+  '/media/usb3'
+  '/media/usb4'
+  '/media/usb5'
+  '/media/network'
+  '/media/fat/cifs'
+  '/media/fat'
+)
 ROOT=/media/fat/games/OpenfpgaOS
+for media_path in "${MEDIA_PATHS[@]}"; do
+    if [ -e "${media_path}/games/OpenfpgaOS" ]; then
+        ROOT="${media_path}/games/OpenfpgaOS"
+        break
+    fi
+done
 GAME_DIR="$ROOT/$GAME"
 WADS="$GAME_DIR/wads"
 VHD="$GAME_DIR/boot.vhd"
