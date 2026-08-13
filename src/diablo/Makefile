@@ -254,8 +254,50 @@ all: app.elf release
 # The large game data (DIABDAT.mpq, optional Hellfire MPQs, devilutionx.mpq) is NOT in the
 # repo: place it in Assets/diablo/common/ on the SD card (or stage it under
 # dist/diablo/Assets/diablo/common/ to have it copied automatically here).
+ifeq ($(TARGET),mister)
+release: game-dist        # MiSTer: the per-game bundle IS the release artifact
+else
 release: app.elf
 	@$(SDK)/platforms/$(TARGET)/image.sh "$(APP)" "app.elf" "$(ROOT)" "$(DIST)" $(GAME_ASSETS)
+endif
+
+# ── MiSTer per-game locked distribution ──────────────────────────────
+# Two instances share one /Diablo/common (the MPQs): DevilutionX would
+# otherwise auto-enable Hellfire merely because hellfire.mpq is visible, so
+# each instance forces its mode with --diablo / --hellfire.  Saves stay
+# separate because each instance gets its own directory.
+# NB the OS instance inis are *_os.ini: plain diablo.ini / hellfire.ini are
+# DevilutionX's own config files (Pocket binds them to the nonvolatile
+# config slot), so reusing those names would collide.
+GAME        = Diablo
+GAME_INIS   = $(DIST)/Assets/diablo/common
+GAME_STAGE  = $(ROOT)/build/mister/$(APP)
+GAME_COMMON = $(ROOT)/build/mister/.$(APP)-common
+GAME_ELF    = diablo.elf
+GAME_CSV    = $(DIST)/mister/external_files.csv
+# boot.vhd must hold the user's MPQs, which setup.sh injects later: DIABDAT
+# ~517 MB + hellfire 65 + hfmonk/hfmusic/hfvoice ~110 + devilutionx ~6.
+# Without an explicit size mkgame sizes from the COMMON payload alone and
+# lands on the 48 MB FAT32 floor, so injection would run out of room.
+GAME_BOOT_MB = 900
+
+game-dist: app.elf
+	@rm -rf "$(GAME_STAGE)" "$(GAME_COMMON)"
+	@mkdir -p "$(GAME_STAGE)/$(GAME)/wads" "$(GAME_COMMON)"
+	@cp "$(RUNTIME)/bank.ofsf" "$(GAME_COMMON)/bank.ofsf"
+	@# devilutionx.mpq ships WITH the port (engine assets, not user data), so it
+	@# belongs baked into the read-only image rather than waiting in wads/ for
+	@# the user to supply -- unlike DIABDAT/hellfire which they must own.
+	@cp "$(GAME_INIS)"/*.mpq "$(GAME_COMMON)/" 2>/dev/null || true
+	@$(SDK)/platforms/mister/mkgame.sh --no-elf --saves-out "$(GAME_STAGE)/$(GAME)/$(GAME).saves.vhd" "$(GAME)" "$(GAME_INIS)" "$(GAME_COMMON)" "$(GAME_STAGE)/$(GAME)/boot.vhd" $(GAME_BOOT_MB)
+	@$(SDK)/platforms/mister/mkmgl.sh "$(GAME)" "$(GAME_INIS)" "$(GAME_STAGE)"
+	@cp app.elf "$(GAME_STAGE)/$(GAME)/$(GAME_ELF)"
+	@cp "$(GAME_INIS)"/*.ini "$(GAME_STAGE)/$(GAME)/"
+	@sed 's|^GAME_DEFAULT=.*|GAME_DEFAULT="$(GAME)"|' "$(SDK)/platforms/mister/setup.sh" > "$(GAME_STAGE)/$(GAME)/setup.sh"
+	@chmod +x "$(GAME_STAGE)/$(GAME)/setup.sh"
+	@if [ -f "$(GAME_CSV)" ]; then cp "$(GAME_CSV)" "$(GAME_STAGE)/$(GAME)/external_files.csv"; fi
+	@rm -rf "$(GAME_COMMON)"
+	@echo "  game-dist staged -> $(GAME_STAGE)"
 
 copy: all
 	@MISTER_IP="$(MISTER_IP)" $(SDK)/platforms/$(TARGET)/copy.sh "$(APP)" "app.elf"
