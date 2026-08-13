@@ -95,11 +95,78 @@ Hosting is `https://github.com/openfpgaOS/<Repo>/releases/latest/download/`:
   which is why the DB is generated `--url-mode flat` (every entry gets an
   explicit `url = <base>/<basename>`) instead of `base_files_url + path`.
 - Flat hosting requires unique basenames within a bundle. They are unique
-  today; a collision would silently serve the wrong file, so check when adding
-  files.
+  today; a collision would silently serve the wrong file. `release.sh` now
+  refuses to publish when it finds one, and equally when the DB references a
+  file the release does not attach — both used to fail silently on the user's
+  machine long after we shipped.
+- **`"path": "pext"` on everything under `games/`.** Without it the Downloader
+  treats the path as SD-relative and installs to the SD card even when the user
+  keeps their games on USB or a CIFS/NAS mount. `mkdb.py` marks files AND
+  folders under `games/` automatically (`PEXT_ROOTS`); the bare `games` folder
+  and everything in `_Computer/` stay SD-relative, which is what the stock
+  MiSTer databases do — cores live on SD, payload is redirectable.
+- **Do not set `reboot: true` on cores or boot ROMs.** It is for `linux/` and
+  MiSTer-binary updates. A new `.rbf` or `boot.rom` just needs the core
+  re-loaded from the menu, and forcing a reboot after a routine `update_all`
+  is a bug users notice (reported 2026-08-11).
 
 `MISTER_DB_ID` (e.g. `openfpgaOS/openfpgaos-doom`) is the Downloader database
 key — **never change it once published**.
+
+
+## Adding your own files (end users)
+
+Two ways, depending on whether you want it automated.
+
+**1. Just copy them in.** Put the files in `games/OpenfpgaOS/<Game>/wads/` on
+the SD (or wherever your games live) and run that game's `setup.sh`. It injects
+them into the read-only `boot.vhd` and republishes the launchers. No database
+involved. This is the supported path and what `INSTALL.txt` describes.
+
+**2. Your own Downloader database**, if you want the files fetched automatically
+— useful across several MiSTers, or to pin exact versions. The same two tools
+the project uses work standalone; nothing needs to be added to the official DB.
+
+```sh
+mkdir -p ~/mydb/empty                      # mkdb needs a staging dir; empty is fine
+cat > ~/mydb/my_files.csv <<'CSV'
+sd_path,url,size,md5,tags
+games/OpenfpgaOS/Quake/wads/pak0.pak,TODO_URL,TODO_SIZE,TODO_MD5,quake personal
+CSV
+
+# Fill size+md5 from an archive.org item (optional -- or write them by hand,
+# `md5sum yourfile` if you are hosting it yourself):
+ia_pin.py --csv ~/mydb/my_files.csv --subdir quake --write
+
+mkdb.py --staging ~/mydb/empty --sd-prefix "" \
+        --db-id "yourname/my-openfpgaos-extras" \
+        --external ~/mydb/my_files.csv --url-mode base \
+        --db-url "https://<where you host it>/my-extras.json.zip" \
+        --output ~/mydb/my-extras.json.zip --ini-out ~/mydb/my.ini
+```
+
+Host the `.json.zip` anywhere the MiSTer can reach it over HTTPS (a GitHub
+release or gist works) and append the generated snippet to
+`/media/fat/downloader.ini`:
+
+```ini
+[yourname/my-openfpgaos-extras]
+db_url = https://<where you host it>/my-extras.json.zip
+```
+
+`update_all` then treats it as just another database. Notes:
+
+- Pick a `db_id` nobody else uses and never change it once published — the
+  Downloader tracks installed files per `db_id`.
+- Entries under `games/` are marked `"path": "pext"` automatically, so they
+  follow your external-storage setting instead of being forced onto the SD.
+- `url` must resolve to the **bare file**, not a `.zip` containing it — the
+  Downloader does not unpack archives.
+- `size` and `md5` must be exact or the download is rejected. That is the
+  point: it is also how you know you got the right version of a file.
+- Only add what you have the right to distribute to whoever can reach that
+  URL. A private DB of files you own is your business; a public one is
+  publishing.
 
 ## 3. Installing on the device
 

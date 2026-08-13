@@ -228,6 +228,29 @@ else
     warn "no *.ofsf in $COMMON_DIR — MIDI music will be silent until bank.ofsf is provided"
 fi
 
+# Engine-owned assets: EVERY other regular file in the common dir →
+# /<Game>/common/<name>, in BOTH shell and --with-wads images.  Anything in
+# this dir was deliberately staged by the game's Makefile (DevilutionX's
+# devilutionx.mpq, ECWolf's wolfmidi.zip/sfxcache.ofx, ...); user-owned data
+# never passes through it — setup.sh injects that from wads/ on-device.  The
+# only exception is the user-data globs (*.wad/*.deh/*.pk3), which stay gated
+# behind --with-wads so dev images can bake test IWADs without the shipped
+# shell doing so.  2026-08-13: this used to be an extension WHITELIST (ELF +
+# *.ofsf); Diablo staged devilutionx.mpq here and the whitelist silently
+# dropped it, so the main menu died on a missing asset with no visible error.
+for a in "$COMMON_DIR"/*; do
+    [[ -f "$a" ]] || continue
+    b="$(basename "$a")"; [[ "$b" == ._* ]] && continue
+    case "${b,,}" in
+        *.elf|*.ofsf) continue ;;               # handled above
+        *.wad|*.deh|*.pk3) continue ;;          # --with-wads block below
+        *.ini) continue ;;                      # instance inis ship loose
+    esac
+    name_warn "$b"
+    add_common "$a" "$b"
+    ok "engine asset baked: $b"
+done
+
 # Wads/dehs/pk3s: only baked into a --with-wads dev/test image; the shipped
 # shell leaves /<Game>/common empty of wads for setup.sh to fill on-device.
 WAD_COUNT=0

@@ -71,6 +71,20 @@ INVALID_ROOT_FOLDERS = ("linux", "screenshots", "savestates", "downloader")
 # Default excludes: docs/logs/junk that get staged but must not ship via the DB.
 DEFAULT_EXCLUDES = ("*.log", "INSTALL.txt", "._*", ".DS_Store", "Thumbs.db")
 
+# Roots the Downloader may redirect to external storage (USB, CIFS/NAS mount).
+# Entries below these get "path": "pext" so a user whose games live on a share
+# does not have the payload forced onto the SD card -- without it the Downloader
+# treats the path as SD-relative and installs there unconditionally.
+# The bare root itself ("games") stays a plain SD folder; only what sits INSIDE
+# it is redirectable, which is the same shape the stock MiSTer databases use.
+PEXT_ROOTS = ("games",)
+
+
+def pext_path(sd_path):
+    """True if this sd path should be marked "path": "pext"."""
+    parts = sd_path.split("/")
+    return len(parts) > 1 and parts[0] in PEXT_ROOTS
+
 
 def warn(msg):
     print("  [!] mkdb: %s" % msg, file=sys.stderr)
@@ -202,6 +216,13 @@ def build_db(args):
     files = {}
     # ── local staged files ──────────────────────────────────────────────
     for sd_path in sorted(files_local):
+        # Launchers belong ONLY in the menu tree.  The staged bundle keeps a
+        # copy under --sd-prefix because the ZIP-install path has setup.sh
+        # republish them from there, but the Downloader delivers straight to
+        # --menu-dir, so shipping both just litters the user's games volume
+        # with files the menu never scans (reported 2026-08-12).
+        if args.menu_dir and sd_path.lower().endswith(".mgl"):
+            continue
         validate_root(sd_path, "file")
         abspath = files_local[sd_path]
         entry = {"hash": md5_of(abspath), "size": os.path.getsize(abspath)}
@@ -214,6 +235,8 @@ def build_db(args):
             entry["overwrite"] = False
         if match_any(sd_path, args.reboot or []):
             entry["reboot"] = True
+        if pext_path(sd_path):
+            entry["path"] = "pext"
         files[sd_path] = entry
 
     # ── launchers ALSO at the menu path ─────────────────────────────────
@@ -239,6 +262,8 @@ def build_db(args):
                 # not exist at menu_path in the hosted tree -- point it at the
                 # staged original instead.
                 entry["url"] = base_url + sd_path
+            if pext_path(menu_path):
+                entry["path"] = "pext"
             files[menu_path] = entry
             for fdir in ancestor_folders(menu_path):
                 folders.add(fdir)
@@ -255,6 +280,8 @@ def build_db(args):
             entry["tags"] = row["tags"]
         if match_any(sd_path, args.install_once):
             entry["overwrite"] = False
+        if pext_path(sd_path):
+            entry["path"] = "pext"
         files[sd_path] = entry
         for fdir in ancestor_folders(sd_path):
             folders.add(fdir)
@@ -272,7 +299,9 @@ def build_db(args):
     if base_url:
         db["base_files_url"] = base_url
     db["files"] = {k: files[k] for k in sorted(files)}
-    db["folders"] = {k: {} for k in sorted(folders)}
+    db["folders"] = {
+        k: ({"path": "pext"} if pext_path(k) else {}) for k in sorted(folders)
+    }
     return db, len(files_local), len(externals)
 
 
