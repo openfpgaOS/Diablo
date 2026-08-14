@@ -8,15 +8,24 @@
 # openfpgaOS MiSTer setup — inject user wads + seed the saves image.
 #
 # The locked per-game model ships TWO images:
-#   boot.vhd (S0)         a READ-ONLY shell: the engine + shared /<Game>/common
-#                         tree; the user drops IWADs into <Game>/wads/ and this
-#                         script injects them.  An update may replace boot.vhd.
+#   boot.vhd.gz           a compressed PRISTINE shell template: the engine +
+#                         shared /<Game>/common tree.  The Downloader/package
+#                         updates it freely.  The WORKING boot.vhd (S0) is
+#                         materialized from it by THIS script, then filled with
+#                         the user's wads — the Downloader never touches the
+#                         working image, so an update can't clobber it, and a
+#                         shell fix always arrives (this script rebuilds and
+#                         re-injects when the template changes).
 #   <Game>.saves.vhd (S1) the writable saves shell — every instance's
 #                         preallocated config/save slots.  It is SEEDED once
 #                         into the Downloader-reserved saves/ tree and NEVER
 #                         overwritten, so updates can't touch your saves.
 #
-# This script does two independent, idempotent things:
+# This script does three independent, idempotent things:
+#   0. Materializes boot.vhd from boot.vhd.gz whenever the working image is
+#      missing or the template changed (.boot.vhd.src remembers the template
+#      md5 the image was built from).  Lossless: wads persist in wads/ and are
+#      re-injected below; saves live in the separate saves image.
 #   1. Seeds  games/OpenfpgaOS/<Game>/<Game>.saves.vhd  ->
 #      /media/fat/saves/OpenfpgaOS/<Game>.vhd  — ONLY if the destination does
 #      not already exist (first install vs update).  Existing saves are safe.
@@ -88,15 +97,35 @@ esac
 
 : > "$LOG"
 echo "openfpgaOS setup — $GAME — $(date)" | tee -a "$LOG"
-if [ -n "$BOOT_IMAGE_MAP" ]; then
-    found=0
-    for pair in $BOOT_IMAGE_MAP; do
-        [ -f "$GAME_DIR/${pair##*:}" ] && found=1
-    done
-    [ "$found" = 1 ] || die "no boot images in $GAME_DIR — unzip the game package into $ROOT first"
-else
-    [ -f "$VHD" ] || die "no image at $VHD — unzip the game package into $ROOT first"
-fi
+
+# The set of boot images this game uses (single boot.vhd, or one per variant).
+IMAGES="boot.vhd"
+[ -n "$BOOT_IMAGE_MAP" ] && IMAGES="$(for pair in $BOOT_IMAGE_MAP; do echo "${pair##*:}"; done | sort -u)"
+
+# ── 0. Materialize working boot image(s) from the shipped template(s) ───────
+# boot*.vhd.gz is the pristine shell the package/Downloader keeps current; the
+# working boot*.vhd is built HERE and belongs to the user from then on.  A
+# changed template (shell fix, bigger image) triggers a fresh rebuild — the
+# wad injection below repopulates it, so the rebuild is lossless.
+found=0
+for img in $IMAGES; do
+    IVHD="$GAME_DIR/$img"; TMPL="$IVHD.gz"; SRC="$GAME_DIR/.$img.src"
+    if [ -f "$TMPL" ]; then
+        tmpl_md5="$(md5sum "$TMPL" | cut -d' ' -f1)"
+        if [ ! -f "$IVHD" ] || [ "$(cat "$SRC" 2>/dev/null)" != "$tmpl_md5" ]; then
+            rm -f "$IVHD.tmp"
+            if gunzip -c "$TMPL" > "$IVHD.tmp" && mv -f "$IVHD.tmp" "$IVHD"; then
+                echo "$tmpl_md5" > "$SRC"
+                ok "built fresh $img from template ($(stat -c%s "$IVHD") B)"
+            else
+                rm -f "$IVHD.tmp"
+                die "failed to build $img from $TMPL (disk full?)"
+            fi
+        fi
+    fi
+    [ -f "$IVHD" ] && found=1
+done
+[ "$found" = 1 ] || die "no boot image or template in $GAME_DIR — unzip the game package into $ROOT (or run the Downloader) first"
 
 # ── 1. Seed the writable saves image (first install only, NEVER overwrite) ──
 if [ -f "$SAVES_SRC" ]; then
@@ -205,8 +234,6 @@ image_for() {
 }
 
 copied=0; skipped=0; empty=1
-IMAGES="boot.vhd"
-[ -n "$BOOT_IMAGE_MAP" ] && IMAGES="$(for pair in $BOOT_IMAGE_MAP; do echo "${pair##*:}"; done | sort -u)"
 mkdir -p "$MNT"
 for img in $IMAGES; do
     IVHD="$GAME_DIR/$img"

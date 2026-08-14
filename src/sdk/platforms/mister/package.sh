@@ -37,8 +37,11 @@ print(json.load(open(js[0]))['core']['metadata']['version'] if js else '1.0.0')
 # ── PER-GAME bundle (checked first: a game staging carries .mgl launchers) ──
 MGLS=("$INPUT"/*.mgl)
 if [ ${#MGLS[@]} -gt 0 ]; then
-    BOOTVHD="$(find "$INPUT" -maxdepth 2 -name boot.vhd 2>/dev/null | head -1)"
-    [ -n "$BOOTVHD" ] || { echo "Error: $LABEL has .mgl launchers but no <Game>/boot.vhd"; exit 1; }
+    # The bundle ships the gzipped shell TEMPLATE (boot*.vhd.gz — setup.sh
+    # materializes the working image on-device); accept raw boot*.vhd too for
+    # pre-template stages.
+    BOOTVHD="$(find "$INPUT" -maxdepth 2 \( -name 'boot*.vhd' -o -name 'boot*.vhd.gz' \) 2>/dev/null | head -1)"
+    [ -n "$BOOTVHD" ] || { echo "Error: $LABEL has .mgl launchers but no <Game>/boot*.vhd[.gz]"; exit 1; }
     GAME="$(basename "$(dirname "$BOOTVHD")")"
     VER="$(game_version)"
     OUTPUT="$REL/${LABEL}-v${VER}.zip"
@@ -92,7 +95,7 @@ boot.rom -> /media/fat/games/OpenfpgaOS/), then for each game:
 1. Unzip this archive INTO  /media/fat/  (the SD card root).
    It places:
      $MENU_REL/*.mgl   the launchers, ready in the menu
-     games/OpenfpgaOS/$GAME/boot.vhd        read-only game image (no data yet)
+     games/OpenfpgaOS/$GAME/boot*.vhd.gz    game image template (built in step 3)
      games/OpenfpgaOS/$GAME/$GAME.saves.vhd saves template (seeded in step 3)
      games/OpenfpgaOS/$GAME/<inst>.ini      per-instance launch config
      games/OpenfpgaOS/$GAME/wads/           <- drop your $ASSET_LABEL here
@@ -103,9 +106,10 @@ boot.rom -> /media/fat/games/OpenfpgaOS/), then for each game:
    games/OpenfpgaOS/$GAME/wads/.  Freeware content can be fetched with
    MiSTer Downloader via external_files.csv.
 
-3. Run setup once (and again after adding files): MiSTer menu -> Scripts ->
-   openfpgaos-<game>-setup.  It seeds  saves/OpenfpgaOS/$GAME.vhd  (only if
-   absent -- your saves are never overwritten) and injects your files into
+3. Run setup once (and again after adding files or updating): MiSTer menu ->
+   Scripts -> openfpgaos-<game>-setup.  It builds the working boot.vhd from
+   the shipped template, seeds  saves/OpenfpgaOS/$GAME.vhd  (only if absent
+   -- your saves are never overwritten) and injects your files into
    boot.vhd.  No ssh, no hand-copying.
 
 4. Play:  MiSTer menu -> Computer -> _OpenfpgaOS -> _$GAME -> <instance>.
@@ -114,8 +118,10 @@ boot.rom -> /media/fat/games/OpenfpgaOS/), then for each game:
 
 Your saves + settings live in  /media/fat/saves/OpenfpgaOS/$GAME.vhd,
 preallocated for power-cut safety and kept on a separate volume so a game
-update (which only replaces boot.vhd) can never touch them.  Never recreate
-that image with ordinary tools.
+update (which only replaces the boot template) can never touch them.  Never
+recreate that image with ordinary tools.  After an update, re-run the setup
+script (step 3) -- it rebuilds boot.vhd from the new template and re-injects
+your files from wads/ automatically.
 EOF
 
     (cd "$SDROOT" && rm -f "$OUTPUT" 2>/dev/null; \

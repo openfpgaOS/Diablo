@@ -39,9 +39,12 @@ What the generator does
   absolute ``url`` / ``size`` / ``md5`` and filter ``tags`` from the CSV.  Rows
   with missing / ``TODO_`` fields (or an unusable URL/size/md5) are skipped with
   a warning — never guessed, never fatal.
-* ``boot.vhd`` and anything matched by ``--install-once`` are marked
-  ``overwrite:false`` so a later Downloader run never clobbers a user's
-  injected wads / in-image saves.
+* Mutable images — ``boot*.vhd`` and ``*.saves.vhd`` — plus anything matched
+  by ``--install-once`` are marked ``overwrite:false`` so a later Downloader
+  run never clobbers a user's injected wads or saves.  (The shipped bundle
+  normally carries only the compressed ``boot*.vhd.gz`` TEMPLATE, which stays
+  overwrite:true so shell fixes reach every install; setup.sh materializes the
+  working image from it.  The rule here is a safety net for stragglers.)
 
 Usage
 -----
@@ -199,6 +202,16 @@ def parse_external(csv_path):
     return rows
 
 
+def is_mutable_image(sd_path):
+    """True for images setup.sh mutates on-device: the working boot shell(s)
+    (boot.vhd / boot-<ext>.vhd — NOT the .gz template) and the saves shell.
+    These must never be overwritten by a later Downloader run."""
+    base = os.path.basename(sd_path)
+    if base.endswith(".saves.vhd"):
+        return True
+    return base.endswith(".vhd") and (base == "boot.vhd" or base.startswith("boot-"))
+
+
 def validate_root(sd_path, kind):
     top = sd_path.split("/")[0].lower()
     if top in INVALID_ROOT_FOLDERS:
@@ -231,7 +244,7 @@ def build_db(args):
                 raise SystemExit("mkdb: --url-mode flat needs --base-url")
             entry["url"] = base_url + os.path.basename(sd_path)
         # base mode: no 'url' → Downloader uses base_files_url + sd_path
-        if match_any(sd_path, args.install_once) or os.path.basename(sd_path) == "boot.vhd":
+        if match_any(sd_path, args.install_once) or is_mutable_image(sd_path):
             entry["overwrite"] = False
         if match_any(sd_path, args.reboot or []):
             entry["reboot"] = True
@@ -278,7 +291,7 @@ def build_db(args):
         entry = {"hash": row["md5"], "size": row["size"], "url": row["url"]}
         if row["tags"]:
             entry["tags"] = row["tags"]
-        if match_any(sd_path, args.install_once):
+        if match_any(sd_path, args.install_once) or is_mutable_image(sd_path):
             entry["overwrite"] = False
         if pext_path(sd_path):
             entry["path"] = "pext"

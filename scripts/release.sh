@@ -60,9 +60,11 @@ CONF="$SDK_DIR/src/sdk/platforms/$TARGET/platform.conf"
 BUNDLE="$SDK_DIR/build/$TARGET/$CORE"
 case "$PLATFORM_BUNDLE_KIND" in
     apf)   [ -d "$BUNDLE/Cores" ]          || err "build/$TARGET/$CORE/ not found — run 'make package CORE=$CORE TARGET=$TARGET' first." ;;
-    # Per-game bundle: build/<t>/<core>/ holds <Game>/ (boot.vhd + saves.vhd +
-    # engine + inis + setup.sh) plus one flat <Inst>.mgl per instance.
-    image) [ -n "$(ls "$BUNDLE"/*/boot.vhd 2>/dev/null)" ] || err "no <Game>/boot.vhd under build/$TARGET/$CORE/ — run 'make package CORE=$CORE TARGET=$TARGET' first." ;;
+    # Per-game bundle: build/<t>/<core>/ holds <Game>/ (boot*.vhd.gz shell
+    # template(s) + saves.vhd + engine + inis + setup.sh) plus one flat
+    # <Inst>.mgl per instance.  Accepts raw boot*.vhd too (pre-template
+    # bundles / local test stages).
+    image) [ -n "$(ls "$BUNDLE"/*/boot*.vhd "$BUNDLE"/*/boot*.vhd.gz 2>/dev/null)" ] || err "no <Game>/boot*.vhd[.gz] under build/$TARGET/$CORE/ — run 'make package CORE=$CORE TARGET=$TARGET' first." ;;
     *)     err "unknown PLATFORM_BUNDLE_KIND='$PLATFORM_BUNDLE_KIND' in $CONF." ;;
 esac
 

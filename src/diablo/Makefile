@@ -290,6 +290,7 @@ game-dist: app.elf
 	@# the user to supply -- unlike DIABDAT/hellfire which they must own.
 	@cp "$(GAME_INIS)"/*.mpq "$(GAME_COMMON)/" 2>/dev/null || true
 	@$(SDK)/platforms/mister/mkgame.sh --no-elf --saves-out "$(GAME_STAGE)/$(GAME)/$(GAME).saves.vhd" "$(GAME)" "$(GAME_INIS)" "$(GAME_COMMON)" "$(GAME_STAGE)/$(GAME)/boot.vhd" $(GAME_BOOT_MB)
+	@gzip -9nf "$(GAME_STAGE)/$(GAME)"/boot*.vhd
 	@$(SDK)/platforms/mister/mkmgl.sh "$(GAME)" "$(GAME_INIS)" "$(GAME_STAGE)"
 	@cp app.elf "$(GAME_STAGE)/$(GAME)/$(GAME_ELF)"
 	@cp "$(GAME_INIS)"/*.ini "$(GAME_STAGE)/$(GAME)/"
