@@ -551,12 +551,63 @@ uint32_t of_input_state(int player, of_input_state_t *state) {
     return 0;
 }
 
-/* Keyboard/deadzone stubs — declared as plain externs in
- * of_input.h's OF_PC branch.  The PC backend doesn't expose a dock
- * keyboard through SDL, so return empty state and accept the
- * deadzone for API compatibility. */
+/* Keyboard — declared as a plain extern in of_input.h's OF_PC branch.
+ * SDL scancodes ARE USB HID usage IDs (SDL borrowed the HID table
+ * wholesale), so the desktop keyboard maps onto the device contract
+ * with no translation: a bit-scan of SDL's keystate fills keys[], and
+ * SDL_GetModState() unpacks into the HID modifier bitmap (bit i <->
+ * usage 0xE0 + i).  Edges are computed here against the previous call,
+ * which matches how the device HAL derives them per poll.
+ *
+ * This exists so keyboard-driven game code can be exercised on PC.
+ * Device-side the same state comes from the Pocket dock, or on MiSTer
+ * from hps_keyboard.v via input-hub slot 2. */
 void of_input_keyboard_state(of_keyboard_state_t *state) {
-    if (state) memset(state, 0, sizeof(*state));
+    static uint32_t prev_keys[OF_KEYBOARD_WORDS];
+    static uint16_t prev_mods;
+
+    if (!state) return;
+    memset(state, 0, sizeof(*state));
+
+    int nkeys = 0;
+    const Uint8 *ks = SDL_GetKeyboardState(&nkeys);
+    if (!ks) return;
+
+    SDL_Keymod m = SDL_GetModState();
+    uint16_t mods = 0;
+    if (m & KMOD_LCTRL)  mods |= 0x01;
+    if (m & KMOD_LSHIFT) mods |= 0x02;
+    if (m & KMOD_LALT)   mods |= 0x04;
+    if (m & KMOD_LGUI)   mods |= 0x08;
+    if (m & KMOD_RCTRL)  mods |= 0x10;
+    if (m & KMOD_RSHIFT) mods |= 0x20;
+    if (m & KMOD_RALT)   mods |= 0x40;
+    if (m & KMOD_RGUI)   mods |= 0x80;
+
+    unsigned max_usage = (unsigned)nkeys;
+    if (max_usage > OF_KEYBOARD_MAX_USAGE) max_usage = OF_KEYBOARD_MAX_USAGE;
+
+    unsigned nreport = 0;
+    for (unsigned u = 0; u < max_usage; u++) {
+        if (!ks[u]) continue;
+        state->keys[u >> 5] |= 1u << (u & 31);
+        /* report_keys mirrors a HID boot report: held non-modifier keys,
+         * first six only (usages 0xE0..0xE7 are the modifiers). */
+        if (u < 0xE0u && nreport < OF_KEYBOARD_REPORT_KEYS)
+            state->report_keys[nreport++] = (uint8_t)u;
+    }
+
+    state->present = 1;
+    state->modifiers = mods;
+    state->modifiers_pressed  = (uint16_t)(mods & ~prev_mods);
+    state->modifiers_released = (uint16_t)(~mods & prev_mods);
+    prev_mods = mods;
+
+    for (unsigned w = 0; w < OF_KEYBOARD_WORDS; w++) {
+        state->keys_pressed[w]  = state->keys[w] & ~prev_keys[w];
+        state->keys_released[w] = ~state->keys[w] & prev_keys[w];
+        prev_keys[w] = state->keys[w];
+    }
 }
 
 /* Desktop mouse via SDL.  The contract read is CONSUMING: SDL's

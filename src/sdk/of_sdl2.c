@@ -922,13 +922,48 @@ SDL_Scancode SDL_GetScancodeFromKey(SDL_Keycode k){
 	}
 }
 
-static void update_keystate(uint32_t buttons) {
+/* HID usage IDs ARE SDL scancodes -- SDL borrowed the USB HID table wholesale
+ * (SDL_SCANCODE_A == 4 == HID usage 4, SDL_SCANCODE_LCTRL == 224 == HID 0xE0),
+ * so a real keyboard needs no translation table here, just a bit-scan.  The
+ * HID modifier bitmap is the same thing packed: bit i <-> usage 0xE0 + i. */
+static const SDL_Keymod hid_to_kmod[8] = {
+	KMOD_LCTRL, KMOD_LSHIFT, KMOD_LALT, KMOD_LGUI,
+	KMOD_RCTRL, KMOD_RSHIFT, KMOD_RALT, KMOD_RGUI
+};
+
+/* Gamepad-synthesized keys and real keys are ORed, not switched between, so
+ * a player can use pad and keyboard at the same time. */
+static void update_keystate(uint32_t buttons, const of_keyboard_state_t *kb) {
 	memset(g_keystate, 0, sizeof g_keystate);
 	for (int bit = 0; bit < 16; bit++) {
 		if (!(buttons & (1u << bit))) continue;
 		SDL_Scancode sc = of_to_scancode(1u << bit);
 		if (sc != SDL_SCANCODE_UNKNOWN) g_keystate[sc] = 1;
 	}
+
+	if (!kb || !kb->present) return;
+
+	for (unsigned w = 0; w < OF_KEYBOARD_WORDS; w++) {
+		uint32_t m = kb->keys[w];
+		while (m) {
+			unsigned b = (unsigned)__builtin_ctz(m);
+			m &= m - 1;
+			unsigned sc = w * 32u + b;
+			if (sc < SDL_NUM_SCANCODES) g_keystate[sc] = 1;
+		}
+	}
+	for (unsigned i = 0; i < 8; i++)
+		if (kb->modifiers & (1u << i))
+			g_keystate[SDL_SCANCODE_LCTRL + i] = 1;
+}
+
+static void push_key_event(SDL_Scancode sc, int down) {
+	SDL_Event e; memset(&e, 0, sizeof e);
+	e.type = down ? SDL_KEYDOWN : SDL_KEYUP;
+	e.key.state = down ? SDL_PRESSED : SDL_RELEASED;
+	e.key.keysym.scancode = sc;
+	e.key.keysym.sym = SDL_GetKeyFromScancode(sc);
+	evq_push(&e);
 }
 
 /* OF mouse button index (0=L 1=R 2=M 3/4=extra) -> SDL button number.
@@ -1045,7 +1080,45 @@ static void poll_and_synthesize(void) {
 #endif
 	}
 	g_prev_buttons = st.buttons;
-	update_keystate(st.buttons);
+
+	/* Real keyboard: Pocket dock, or MiSTer USB via hps_keyboard.v -> input
+	 * slot 2.  of_input_keyboard_state() zeroes the struct (present = 0) on a
+	 * runtime whose service table predates the keyboard, so this is a no-op
+	 * where there is no keyboard. */
+	of_keyboard_state_t kb;
+	of_input_keyboard_state(&kb);
+	if (kb.present) {
+#ifndef OF_SDL_NO_KEYBOARD_EVENTS
+		for (unsigned w = 0; w < OF_KEYBOARD_WORDS; w++) {
+			uint32_t dn = kb.keys_pressed[w];
+			uint32_t up = kb.keys_released[w];
+			while (dn) {
+				unsigned b = (unsigned)__builtin_ctz(dn); dn &= dn - 1;
+				unsigned sc = w * 32u + b;
+				if (sc < SDL_NUM_SCANCODES) push_key_event((SDL_Scancode)sc, 1);
+			}
+			while (up) {
+				unsigned b = (unsigned)__builtin_ctz(up); up &= up - 1;
+				unsigned sc = w * 32u + b;
+				if (sc < SDL_NUM_SCANCODES) push_key_event((SDL_Scancode)sc, 0);
+			}
+		}
+		for (unsigned i = 0; i < 8; i++) {
+			if (kb.modifiers_pressed & (1u << i))
+				push_key_event((SDL_Scancode)(SDL_SCANCODE_LCTRL + i), 1);
+			if (kb.modifiers_released & (1u << i))
+				push_key_event((SDL_Scancode)(SDL_SCANCODE_LCTRL + i), 0);
+		}
+#endif
+		/* Only track a real keyboard's modifiers -- with none attached an
+		 * app's SDL_SetModState() must not be clobbered every poll. */
+		SDL_Keymod mods = KMOD_NONE;
+		for (unsigned i = 0; i < 8; i++)
+			if (kb.modifiers & (1u << i)) mods |= hid_to_kmod[i];
+		g_modstate = mods;
+	}
+
+	update_keystate(st.buttons, kb.present ? &kb : NULL);
 	mouse_refresh();
 	mouse_flush_events();
 }
