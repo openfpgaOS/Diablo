@@ -9,8 +9,8 @@
             "description": "openfpgaOS on VexiiRiscv RISC-V CPU",
             "author": "ThinkElastic",
             "url": "",
-            "version": "0.7",
-            "date_release": "2026-06-17"
+            "version": "0.8.1",
+            "date_release": "2026-08-13"
         },
         "framework": {
             "target_product": "Analogue Pocket",

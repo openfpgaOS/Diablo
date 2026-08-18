@@ -138,11 +138,39 @@ void of_platform_init(void)
 	 * (discovery bound it), so the real cost is only the 10 aliases for the
 	 * extension this run does not use.
 	 *
-	 * Order matters. Registration is append-only and silently stops at 32,
-	 * so the entries are laid out most-critical-first: the ini above, then
-	 * the hero slots here, then the stash last. If anything is dropped it is
-	 * the tail -- and the tail is the opposite-extension stash alias, the one
-	 * name in this whole list that no build ever opens. */
+	 * Order matters. Registration is append-only and stops (loudly since
+	 * OS v0.8.1) at the table cap, so the entries are laid out
+	 * most-critical-first: the ini above, the stash next, the hero slots
+	 * last. On a 32-entry kernel the Hellfire layout overflows by exactly
+	 * one name, and the tail -- single_9's cross-mode alias -- is the least
+	 * damaging one to lose. */
+
+	/* Shared stash (DevilutionX GetStashSavePath -> "stash.sv" / "stash.hsv").
+	 * Slot 8 is the otherwise-unused nonvolatile window at 0x20380000
+	 * (data.json binds its SD file). Both spellings, same reason as the hero
+	 * slots below: the in-game Diablo/Hellfire selector decides gbIsHellfire
+	 * at runtime, so a Hellfire instance routinely opens the .sv spelling.
+	 *
+	 * Registered BEFORE the hero slots. This pair used to sit last on the
+	 * theory that the opposite-extension stash alias is never opened --
+	 * wrong: the mode selector makes it the 33rd name in the Hellfire
+	 * layout, and pre-v0.8.1 kernels' 32-entry table silently dropped it,
+	 * so every Diablo-mode stash save under the Hellfire instance failed
+	 * and the stash reset each boot (field report 2026-08-13). With the
+	 * stash ahead of the heroes, the name a 32-entry kernel drops is
+	 * single_9's opposite-extension alias: a 10th cross-mode hero doesn't
+	 * persist (logged, non-fatal). On >= v0.8.1 (64-entry alias table)
+	 * nothing is dropped at all.
+	 *
+	 * Both modes resolve to the SAME slot, so unlike upstream the Diablo
+	 * and Hellfire stashes are one shared archive: Diablo-mode LoadStash
+	 * prunes Hellfire-only items (RemoveInvalidItem) and a Diablo-mode
+	 * stash write persists that pruned copy.
+	 * NOTE: shareware ("stash_spawn.sv") and multiplayer ("multi_N.sv")
+	 * names remain unregistered -- those modes have no slots on this core. */
+	bind_if_unbound(8, "stash.sv");
+	bind_if_unbound(8, "stash.hsv");
+
 	for (int i = 0; i < 10; i++) {
 		char name[24];
 		snprintf(name, sizeof name, "single_%d.sv", i);
@@ -150,19 +178,6 @@ void of_platform_init(void)
 		snprintf(name, sizeof name, "single_%d.hsv", i);
 		bind_if_unbound(10 + i, name);
 	}
-
-	/* Shared stash (DevilutionX GetStashSavePath -> "stash.sv" / "stash.hsv").
-	 * Previously UNREGISTERED: every stash save silently failed (MpqWriter's
-	 * "r+b" open found no slot, valid_=false) and the stash reset each boot.
-	 * Slot 8 is the otherwise-unused nonvolatile window at 0x20380000
-	 * (data.json binds its SD file). Both spellings for the same reason as
-	 * the hero slots, and LAST because this is the one pair that can be
-	 * safely lost to a full table: the mode-matching name is already bound by
-	 * discovery, and the other is never opened.
-	 * NOTE: shareware ("stash_spawn.sv") and multiplayer ("multi_N.sv")
-	 * names remain unregistered -- those modes have no slots on this core. */
-	bind_if_unbound(8, "stash.sv");
-	bind_if_unbound(8, "stash.hsv");
 
 	/* The MPQs are opened directly by basename via the slot service. */
 }

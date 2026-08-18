@@ -211,7 +211,8 @@ extern "C" {
                                          * gated GPU mis-reads C-encoded words.
                                          * Tracks gpu_core INCLUDE_COMBINE &&
                                          * INCLUDE_DIRECT_COLOR.  Pocket os30
-                                         * (SM64) CLEARS it (EXCLUDE_COMBINE). */
+                                         * a variant that gates the combiner
+                                         * must clear this bit too. */
 
 /* Convenience: all the GPU bits an app might care about for renderer choice. */
 #define OF_HW_GPU_LITE_MASK  (OF_HW_GPU_SPAN | OF_HW_GPU_FRAGPIPE)
