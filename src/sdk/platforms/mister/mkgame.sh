@@ -91,12 +91,14 @@ NV_SAVE_SLOTS=10      # slot_0..slot_9.sav (must match mkimage.c NV_SAVE_SLOTS)
 WITH_WADS=0
 NO_ELF=0
 NO_SAVES=0
+ALL_ELFS=0
 SAVES_OUT=""
 while [[ "$1" == --* ]]; do
     case "$1" in
         --with-wads) WITH_WADS=1; shift ;;
         --no-elf)    NO_ELF=1; shift ;;
         --no-saves)  NO_SAVES=1; shift ;;
+        --all-elfs)  ALL_ELFS=1; shift ;;
         --saves-out) SAVES_OUT="$2"; shift 2 ;;
         *)           fail "unknown option: $1" ;;
     esac
@@ -220,6 +222,22 @@ add_common() {   # $1 host-src  $2 in-image basename
 if [[ "$NO_ELF" != 1 ]]; then
     add_common "$ELF_SRC" "app.elf"
     [[ "${ELF_NAME,,}" != "app.elf" ]] && add_common "$ELF_SRC" "$ELF_NAME"
+fi
+
+# --all-elfs: bake EVERY other *.elf in the common dir under its own name.
+# Multi-engine games (ScummVM ships scummvm_lucasarts/sci/agi/dreamweb.elf)
+# reference per-instance engines via the ini's ELF= name; in a self-contained
+# image (no F-loaded engine) each of those names must resolve on the common
+# tree, not just the first ini's engine.
+if [[ "$ALL_ELFS" == 1 && "$NO_ELF" != 1 ]]; then
+    for e in "$COMMON_DIR"/*.elf; do
+        b="$(basename "$e")"; [[ "$b" == ._* ]] && continue
+        [[ "$e" -ef "$ELF_SRC" ]] && continue
+        [[ "${b,,}" == "app.elf" || "${b,,}" == "${ELF_NAME,,}" ]] && continue
+        name_warn "$b"
+        add_common "$e" "$b"
+        ok "extra engine baked: $b"
+    done
 fi
 
 # Soundfont(s): every *.ofsf in the common dir → /<Game>/common/<name>.
