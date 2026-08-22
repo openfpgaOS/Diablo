@@ -38,6 +38,15 @@ __attribute__((constructor)) static void of_diablo_banner(void)
 
 static int g_done;
 
+/* Hero save slots, one nonvolatile data slot each (ids 10-19, see the map
+ * above and dist/diablo/Cores/thinkelastic.Diablo/data.json). This is a
+ * hardware count -- the kernel's OF_TARGET_SAVE_MAX_SLOTS is 10 on Pocket and
+ * MiSTer alike -- and DevilutionX has to agree: MAX_CHARACTERS in
+ * devilutionx/Source/pfile.h is defined to the same number under OPENFPGAOS
+ * so character select cannot hand a new hero a saveNumber with no window
+ * behind it. Change one and you must change the other. */
+#define DIABLO_SAVE_SLOTS 10
+
 /* Bind `name` -> `slot` unless the kernel registry already resolves `name`.
  *
  * The registry (kernel syscall.c file_slot_register) is an APPEND-ONLY
@@ -171,7 +180,7 @@ void of_platform_init(void)
 	bind_if_unbound(8, "stash.sv");
 	bind_if_unbound(8, "stash.hsv");
 
-	for (int i = 0; i < 10; i++) {
+	for (int i = 0; i < DIABLO_SAVE_SLOTS; i++) {
 		char name[24];
 		snprintf(name, sizeof name, "single_%d.sv", i);
 		bind_if_unbound(10 + i, name);

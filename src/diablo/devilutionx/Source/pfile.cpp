@@ -187,28 +187,6 @@ void Game2UiPlayer(const Player &player, _uiheroinfo *heroinfo, bool bHasSaveFil
 	heroinfo->spawned = gbIsSpawn;
 }
 
-bool GetFileName(uint8_t lvl, char *dst)
-{
-	if (gbIsMultiplayer) {
-		if (lvl != 0)
-			return false;
-		memcpy(dst, "hero", 5);
-		return true;
-	}
-	if (GetPermSaveNames(lvl, dst)) {
-		return true;
-	}
-	if (lvl == giNumberOfLevels * 2) {
-		memcpy(dst, "game", 5);
-		return true;
-	}
-	if (lvl == giNumberOfLevels * 2 + 1) {
-		memcpy(dst, "hero", 5);
-		return true;
-	}
-	return false;
-}
-
 bool ArchiveContainsGame(SaveReader &hsArchive)
 {
 	if (gbIsMultiplayer)
@@ -478,9 +456,65 @@ HeroCompareResult CompareSaves(const std::string &actualSavePath, const std::str
 }
 #endif // !DISABLE_DEMOMODE
 
+// [of] Every member name a save archive can hold, enumerated independently of
+// the mode that happens to be loaded. GetSaveNames() splits 'l' (dungeon) from
+// 's' (set level) at giNumberOfLevels -- 17 in Diablo, 25 in Hellfire -- so
+// anything that has to be exhaustive silently misses members whenever that
+// global disagrees with how the archive was written. Enumerating the widest
+// range instead is a superset for both modes; absent names are simply skipped.
+constexpr int MaxSaveLevelNames = 25;
+static_assert(MaxSaveLevelNames <= NUMLEVELS,
+    "level member names must index Player::_pLvlVisited/_pSLvlVisited directly");
+
+template <typename Fn>
+void ForEachSaveMemberName(Fn &&fn)
+{
+	for (const char *fixed : { "hero", "game", "heroitems", "hotkeys", "additionalMissiles" })
+		fn(fixed);
+	char name[MaxMpqPathSize];
+	for (const char *prefix : { "perm", "temp" }) {
+		for (const char suffix : { 'l', 's' }) {
+			for (int i = 0; i < MaxSaveLevelNames; i++) {
+				*fmt::format_to(name, "{}{}{:02d}", prefix, suffix, i) = '\0';
+				fn(static_cast<const char *>(name));
+			}
+		}
+	}
+}
+
+// [of] Empty a save slot: drop every member the archive could hold, not just
+// the ones the mode currently loaded can name.
+//
+// Upstream deletes the save FILE, so what is left inside it never comes up.
+// Here a save is a fixed 256 KB nonvolatile window that unlink() cannot
+// remove, and BOTH spellings of a slot -- single_N.sv and single_N.hsv -- are
+// bound to the SAME window (of_platform.c), so one archive is shared by the
+// Diablo and the Hellfire runs of that slot. Clearing through GetFileName
+// therefore only reached 0..giNumberOfLevels-1: deleting a Hellfire character
+// while the in-game selector was on Diablo left perm/temp l/s 17..24 -- its
+// Crypt and Nest members -- allocated, and the next character created in that
+// slot inherited them as dead weight in a slot a finished save already fills
+// to ~61%. A later mode switch made it worse than wasted space: ConvertLevels
+// converts whatever member files exist, orphans included.
+//
+// Multiplayer archives only ever hold hero/heroitems/hotkeys, so sweeping the
+// wider list is equivalent there.
+void ClearSaveSlot(SaveWriter &saveWriter)
+{
+	ForEachSaveMemberName([&saveWriter](const char *name) { saveWriter.RemoveHashEntry(name); });
+}
+
 void pfile_write_hero(SaveWriter &saveWriter, bool writeGameData)
 {
 	if (writeGameData) {
+#ifdef OPENFPGAOS
+		// Before the writes, not after: the freed blocks are then available
+		// to this very save, which matters most on the nearly-full slot that
+		// makes reclaiming worth doing at all. It also drops any inherited
+		// temp member for an unvisited level before RenameTempToPerm below
+		// could promote it over this character's own copy.
+		ReclaimUnreachableLevels(saveWriter, *MyPlayer);
+#endif
 		SaveGameData(saveWriter);
 		RenameTempToPerm(saveWriter);
 	}
@@ -500,30 +534,6 @@ void pfile_write_hero(SaveWriter &saveWriter, bool writeGameData)
 // saves are plain files in a directory -- no tables, no sectors, nothing to
 // migrate -- and their SaveWriter has no `recreate` constructor.
 #ifndef UNPACKED_SAVES
-
-// [of] Names a save archive can hold, enumerated independently of the mode
-// that happens to be loaded. GetSaveNames() splits 'l' (dungeon) from 's' (set
-// level) at giNumberOfLevels -- 17 in Diablo, 25 in Hellfire -- so driving the
-// migration off it would silently skip members whenever the global disagrees
-// with how the archive was written. Enumerating the widest range instead makes
-// this a superset for both modes; absent names are simply skipped.
-constexpr int MaxSaveLevelNames = 25;
-
-template <typename Fn>
-void ForEachSaveMemberName(Fn &&fn)
-{
-	for (const char *fixed : { "hero", "game", "heroitems", "hotkeys", "additionalMissiles" })
-		fn(fixed);
-	char name[MaxMpqPathSize];
-	for (const char *prefix : { "perm", "temp" }) {
-		for (const char suffix : { 'l', 's' }) {
-			for (int i = 0; i < MaxSaveLevelNames; i++) {
-				*fmt::format_to(name, "{}{}{:02d}", prefix, suffix, i) = '\0';
-				fn(static_cast<const char *>(name));
-			}
-		}
-	}
-}
 
 // Reads just the archive header to classify its layout. Deliberately avoids
 // opening an MpqWriter: that would rewrite the header and both tables on
@@ -681,6 +691,43 @@ const char *pfile_get_password()
 	if (gbIsSpawn)
 		return gbIsMultiplayer ? PASSWORD_SPAWN_MULTI : PASSWORD_SPAWN_SINGLE;
 	return gbIsMultiplayer ? PASSWORD_MULTI : PASSWORD_SINGLE;
+}
+
+// [of] Give back the space held by level members this character can never read.
+//
+// SaveLevel() sets the matching visited flag as it writes a member, and every
+// LoadLevel() is gated on that same flag (diablo.cpp:2958 and 3003 for dungeon
+// levels, 3053 for set levels), so for anything this character owns "member
+// present" implies "flag set". A member whose flag is clear is unreachable in
+// either game mode -- entering that level regenerates it -- so dropping it
+// cannot lose state that would ever have been read back.
+//
+// This is the retroactive half of ClearSaveSlot(): a save that already
+// inherited a deleted character's leftovers sheds them at its next full save
+// instead of carrying them until the slot is recycled. Only worth the work
+// where the slot is a fixed size, so pfile_write_hero calls it under
+// OPENFPGAOS only; save_lifecycle_test drives it directly.
+void ReclaimUnreachableLevels(SaveWriter &saveWriter, const Player &player)
+{
+	if (gbIsMultiplayer)
+		return;
+	char name[MaxMpqPathSize];
+	int reclaimed = 0;
+	for (int i = 0; i < MaxSaveLevelNames; i++) {
+		for (const char suffix : { 'l', 's' }) {
+			if (suffix == 'l' ? player._pLvlVisited[i] : player._pSLvlVisited[i])
+				continue;
+			for (const char *prefix : { "perm", "temp" }) {
+				*fmt::format_to(name, "{}{}{:02d}", prefix, suffix, i) = '\0';
+				if (!saveWriter.HasFile(name))
+					continue;
+				saveWriter.RemoveHashEntry(name);
+				reclaimed++;
+			}
+		}
+	}
+	if (reclaimed > 0)
+		LogInfo("pfile: reclaimed {} unreachable level member(s) from the save archive", reclaimed);
 }
 
 bool pfile_migrate_save_layout(uint32_t saveNum)
@@ -909,7 +956,7 @@ bool pfile_ui_save_create(_uiheroinfo *heroinfo)
 	giNumberOfLevels = gbIsHellfire ? 25 : 17;
 
 	SaveWriter saveWriter = GetSaveWriter(saveNum);
-	saveWriter.RemoveHashEntries(GetFileName);
+	ClearSaveSlot(saveWriter);
 	CopyUtf8(hero_names[saveNum], heroinfo->name, sizeof(hero_names[saveNum]));
 
 	Player &player = Players[0];
@@ -921,6 +968,20 @@ bool pfile_ui_save_create(_uiheroinfo *heroinfo)
 	if (!gbVanilla) {
 		SaveHotkeys(saveWriter, player);
 		SaveHeroItems(saveWriter, player);
+	}
+
+	// [of] A create whose writes did not land is not a character. Without this
+	// the menu listed the new hero out of memory for the rest of the session
+	// and it was gone at the next boot: an unwritable slot (a saveNumber with
+	// no nonvolatile window behind it) and an archive with no room left both
+	// ended there silently. The caller turns false into "Unable to create
+	// character." Roll the name back and empty the slot so a half-written hero
+	// record cannot show up in the list either.
+	if (saveWriter.HadWriteFailure()) {
+		LogError("pfile: could not create a character in slot {}", saveNum);
+		hero_names[saveNum][0] = '\0';
+		ClearSaveSlot(saveWriter);
+		return false;
 	}
 
 	return true;
@@ -942,15 +1003,12 @@ bool pfile_delete_save(_uiheroinfo *heroInfo)
 		// drop every hash entry so ReadHero() finds nothing. The cleared
 		// tables are written back to the slot when the writer closes and
 		// persisted by the launcher's save-on-exit writeback (same path
-		// normal saves use). GetFileName/GetTempSaveNames iterate over
-		// giNumberOfLevels, so set it as pfile_ui_save_create does.
-		giNumberOfLevels = gbIsHellfire ? 25 : 17;
+		// normal saves use). ClearSaveSlot() sweeps both modes' member
+		// names, so the space comes back whichever mode the deleted
+		// character was played in -- see the comment there.
 		{
 			SaveWriter saveWriter = GetSaveWriter(saveNum);
-			saveWriter.RemoveHashEntries(GetFileName);
-			saveWriter.RemoveHashEntries(GetTempSaveNames);
-			saveWriter.RemoveHashEntry("heroitems");
-			saveWriter.RemoveHashEntry("hotkeys");
+			ClearSaveSlot(saveWriter);
 		}
 #endif
 

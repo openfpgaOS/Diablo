@@ -19,7 +19,22 @@
 
 namespace devilution {
 
+// [of] One hero per nonvolatile save window. The Pocket and MiSTer targets
+// expose exactly ten of them: data slot ids 10-19 carry single_0..9
+// (dist/diablo/Cores/thinkelastic.Diablo/data.json, bound by name in
+// src/diablo/platform/of_platform.c), and the kernel agrees --
+// OF_TARGET_SAVE_MAX_SLOTS is 10 on both targets. Upstream's 99 let character
+// select hand a new hero a saveNumber with no window behind it: "single_10.sv"
+// is not a registered name and the kernel's ".sav" fallback rejects any index
+// past SAVE_MAX_SLOTS, so MpqWriter came up invalid, every write was dropped,
+// and a hero that looked created and played fine for the rest of the session
+// was simply gone at the next boot. With the real count here the bounds check
+// in pfile_ui_save_create refuses the create and the menu says so.
+#ifdef OPENFPGAOS
+#define MAX_CHARACTERS 10
+#else
 #define MAX_CHARACTERS 99
+#endif
 
 extern bool gbValidSaveFile;
 
@@ -125,6 +140,24 @@ HeroCompareResult pfile_compare_hero_demo(int demo, bool logDetails);
 #endif
 
 void sfile_write_stash();
+
+/**
+ * @brief [of] Drops level members `player` can never read back, returning the
+ * space they hold to the fixed-size save slot.
+ *
+ * SaveLevel() sets the matching visited flag as it writes a member, and every
+ * LoadLevel() is gated on that same flag, so for anything this character owns
+ * "member present" implies "flag set". A member whose flag is clear is
+ * unreachable in either game mode -- re-entering that level regenerates it --
+ * which is what makes removing it lossless.
+ *
+ * Called from the save path on openfpgaOS, where a slot is a fixed 256 KB
+ * window shared by the .sv and .hsv spellings and can therefore inherit a
+ * deleted character's leftovers. Declared here rather than kept file-local so
+ * save_lifecycle_test can run it against a save built by a real playthrough
+ * and prove it removes nothing that playthrough owns.
+ */
+void ReclaimUnreachableLevels(SaveWriter &saveWriter, const Player &player);
 
 /**
  * @brief [of] Rewrites a save written by an older build into the compact

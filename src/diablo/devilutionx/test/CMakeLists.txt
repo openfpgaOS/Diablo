@@ -31,6 +31,8 @@ set(tests
   missiles_test
   monster_budget_test
   monster_gfx_bytes_test
+  save_clear_test
+  save_lifecycle_test
   save_inspect_test
   make_lair_save_test
   pack_test

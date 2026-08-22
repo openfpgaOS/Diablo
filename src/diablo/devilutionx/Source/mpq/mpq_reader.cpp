@@ -47,6 +47,13 @@ MpqArchive &MpqArchive::operator=(MpqArchive &&other) noexcept
 	if (archive_ != nullptr)
 		libmpq__archive_close(archive_);
 	archive_ = other.archive_;
+	// [of] The move CONSTRUCTOR clears other.archive_; this forgot to, so the
+	// moved-from archive closed the handle a second time from its destructor
+	// -- a double libmpq__archive_close / fclose. Latent in the game today
+	// (LoadMPQ only ever assigns into a disengaged optional), but assigning a
+	// freshly opened archive over an engaged `std::optional<SaveReader>` is
+	// the obvious way to write that code and corrupts the heap.
+	other.archive_ = nullptr;
 	tmp_buf_ = std::move(other.tmp_buf_);
 	return *this;
 }
