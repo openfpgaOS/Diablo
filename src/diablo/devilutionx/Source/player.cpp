@@ -2184,6 +2184,7 @@ void InitPlayerGFX(Player &player)
 void ResetPlayerGFX(Player &player)
 {
 	player.AnimInfo.sprites = std::nullopt;
+	player.previewCelSprite = std::nullopt;
 	for (PlayerAnimationData &animData : player.AnimationData) {
 		animData.sprites = std::nullopt;
 	}

@@ -13,6 +13,7 @@
 #include "engine/demomode.h"
 #include "engine/dx.h"
 #include "engine/load_file.hpp"
+#include "engine/palette_gamma.hpp"
 #include "engine/random.hpp"
 #include "hwcursor.hpp"
 #include "options.h"
@@ -173,16 +174,8 @@ void palette_update(int first, int ncolor)
 
 void ApplyGamma(std::array<SDL_Color, 256> &dst, const std::array<SDL_Color, 256> &src, int n)
 {
-	// powf+float, not pow+double: on rv32imafc (no D extension) double pow()
-	// runs ~10x slower via libgcc soft-FP. 256 x 3 = 768 pow() calls per
-	// invocation -- an audio-underrun-class stall during fades when double.
-	const float g = *sgOptions.Graphics.gammaCorrection / 100.0F;
-
-	for (int i = 0; i < n; i++) {
-		dst[i].r = static_cast<Uint8>(powf(src[i].r / 256.0F, g) * 256.0F);
-		dst[i].g = static_cast<Uint8>(powf(src[i].g / 256.0F, g) * 256.0F);
-		dst[i].b = static_cast<Uint8>(powf(src[i].b / 256.0F, g) * 256.0F);
-	}
+	static PaletteGamma gamma;
+	gamma.Apply(dst, src, n, *sgOptions.Graphics.gammaCorrection);
 	RedrawEverything();
 }
 

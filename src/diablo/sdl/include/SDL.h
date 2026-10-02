@@ -303,6 +303,7 @@ SDL_Surface *SDL_ConvertSurfaceFormat(SDL_Surface *src, Uint32 pixel_format, Uin
 #define SDL_RWOPS_UNKNOWN   0
 #define SDL_RWOPS_STDIO     2
 #define SDL_RWOPS_MEMORY    4
+#define SDL_RWOPS_MEMORY_RO 5
 #define RW_SEEK_SET 0
 #define RW_SEEK_CUR 1
 #define RW_SEEK_END 2

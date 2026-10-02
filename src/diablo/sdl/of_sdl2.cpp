@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <limits.h>
 #include <unistd.h>
 
 /* Audio mixer pump (implemented in of_aulib.cpp). There is no audio thread
@@ -504,24 +505,45 @@ SDL_Surface *SDL_ConvertSurfaceFormat(SDL_Surface *src, Uint32 pixel_format, Uin
 /* RWops (FILE*-backed + memory)                                          */
 /* ===================================================================== */
 static Sint64 rw_stdio_size(SDL_RWops *c){ FILE*f=(FILE*)c->hidden.stdio.fp; long cur=ftell(f); fseek(f,0,SEEK_END); long e=ftell(f); fseek(f,cur,SEEK_SET); return e; }
-static Sint64 rw_stdio_seek(SDL_RWops *c, Sint64 off, int w){ FILE*f=(FILE*)c->hidden.stdio.fp; fseek(f,(long)off,w); return ftell(f); }
+static Sint64 rw_stdio_seek(SDL_RWops *c, Sint64 off, int w){
+	FILE *f = (FILE*)c->hidden.stdio.fp;
+	if (off < LONG_MIN || off > LONG_MAX || fseek(f, (long)off, w) != 0)
+		return SDL_SetError("File seek failed");
+	return ftell(f);
+}
 static size_t rw_stdio_read(SDL_RWops *c, void*p, size_t sz, size_t n){ return fread(p,sz,n,(FILE*)c->hidden.stdio.fp); }
 static size_t rw_stdio_write(SDL_RWops *c, const void*p, size_t sz, size_t n){ return fwrite(p,sz,n,(FILE*)c->hidden.stdio.fp); }
 static int    rw_stdio_close(SDL_RWops *c){ if(c){ if(c->hidden.stdio.fp) fclose((FILE*)c->hidden.stdio.fp); free(c);} return 0; }
 
 static Sint64 rw_mem_size(SDL_RWops *c){ return (Sint64)(c->hidden.mem.stop - c->hidden.mem.base); }
 static Sint64 rw_mem_seek(SDL_RWops *c, Sint64 off, int w){
-	Uint8 *np; if(w==RW_SEEK_SET)np=c->hidden.mem.base+off; else if(w==RW_SEEK_CUR)np=c->hidden.mem.here+off; else np=c->hidden.mem.stop+off;
-	if(np<c->hidden.mem.base)np=c->hidden.mem.base; if(np>c->hidden.mem.stop)np=c->hidden.mem.stop;
-	c->hidden.mem.here=np; return np-c->hidden.mem.base;
+	const Sint64 size = rw_mem_size(c);
+	Sint64 pos;
+	switch (w) {
+	case RW_SEEK_SET: pos = 0; break;
+	case RW_SEEK_CUR: pos = c->hidden.mem.here - c->hidden.mem.base; break;
+	case RW_SEEK_END: pos = size; break;
+	default: return SDL_SetError("Invalid seek origin");
+	}
+	// Clamp the offset before addition or pointer arithmetic can overflow.
+	if (off < -pos) pos = 0;
+	else if (off > size - pos) pos = size;
+	else pos += off;
+	c->hidden.mem.here = c->hidden.mem.base + pos;
+	return pos;
 }
 static size_t rw_mem_read(SDL_RWops *c, void*p, size_t sz, size_t n){
 	if(sz==0||n==0) return 0; size_t avail=(c->hidden.mem.stop-c->hidden.mem.here)/sz; if(n>avail)n=avail;
 	memcpy(p,c->hidden.mem.here,n*sz); c->hidden.mem.here+=n*sz; return n;
 }
 static size_t rw_mem_write(SDL_RWops *c, const void*p, size_t sz, size_t n){
+	if (sz == 0 || n == 0) return 0;
 	size_t avail=(c->hidden.mem.stop-c->hidden.mem.here)/sz; if(n>avail)n=avail;
 	memcpy(c->hidden.mem.here,p,n*sz); c->hidden.mem.here+=n*sz; return n;
+}
+static size_t rw_mem_write_readonly(SDL_RWops *, const void *, size_t, size_t){
+	SDL_SetError("Cannot write to read-only memory");
+	return 0;
 }
 static int rw_mem_close(SDL_RWops *c){ free(c); return 0; }
 
@@ -529,17 +551,26 @@ SDL_RWops *SDL_AllocRW(void){ return (SDL_RWops*)calloc(1,sizeof(SDL_RWops)); }
 void SDL_FreeRW(SDL_RWops *a){ free(a); }
 SDL_RWops *SDL_RWFromFile(const char *file, const char *mode) {
 	FILE *f = fopen(file, mode); if (!f) { SDL_SetError("open %s failed", file); return NULL; }
-	SDL_RWops *c = SDL_AllocRW(); c->type=SDL_RWOPS_STDIO; c->hidden.stdio.fp=f;
+	SDL_RWops *c = SDL_AllocRW();
+	if (!c) { fclose(f); SDL_SetError("Out of memory"); return NULL; }
+	c->type=SDL_RWOPS_STDIO; c->hidden.stdio.fp=f;
 	c->size=rw_stdio_size; c->seek=rw_stdio_seek; c->read=rw_stdio_read; c->write=rw_stdio_write; c->close=rw_stdio_close;
 	return c;
 }
 SDL_RWops *SDL_RWFromMem(void *mem, int size) {
-	SDL_RWops *c=SDL_AllocRW(); c->type=SDL_RWOPS_MEMORY;
+	if (!mem || size <= 0) { SDL_SetError("Invalid memory stream"); return NULL; }
+	SDL_RWops *c=SDL_AllocRW();
+	if (!c) { SDL_SetError("Out of memory"); return NULL; }
+	c->type=SDL_RWOPS_MEMORY;
 	c->hidden.mem.base=(Uint8*)mem; c->hidden.mem.here=(Uint8*)mem; c->hidden.mem.stop=(Uint8*)mem+size;
 	c->size=rw_mem_size; c->seek=rw_mem_seek; c->read=rw_mem_read; c->write=rw_mem_write; c->close=rw_mem_close;
 	return c;
 }
-SDL_RWops *SDL_RWFromConstMem(const void *mem, int size) { return SDL_RWFromMem((void*)mem, size); }
+SDL_RWops *SDL_RWFromConstMem(const void *mem, int size) {
+	SDL_RWops *c = SDL_RWFromMem((void*)mem, size);
+	if (c) { c->type = SDL_RWOPS_MEMORY_RO; c->write = rw_mem_write_readonly; }
+	return c;
+}
 Uint8  SDL_ReadU8(SDL_RWops *s){ Uint8 v=0; s->read(s,&v,1,1); return v; }
 Uint16 SDL_ReadLE16(SDL_RWops *s){ Uint8 b[2]={0}; s->read(s,b,2,1); return (Uint16)(b[0]|(b[1]<<8)); }
 Uint32 SDL_ReadLE32(SDL_RWops *s){ Uint8 b[4]={0}; s->read(s,b,4,1); return (Uint32)(b[0]|(b[1]<<8)|(b[2]<<16)|((Uint32)b[3]<<24)); }
@@ -610,19 +641,32 @@ SDL_Surface *SDL_GetVideoSurface(void) { return SDL_GetWindowSurface(&g_window);
 
 /* ---- frame-time telemetry (build with `make PERF=1`) ----
  * One serial line every 2 s: fps, average world-draw / SVid-decode ms
- * (of_perf_add_draw_us from scrollrt.cpp / storm_svid.cpp), average flip ms
+ * (of_perf_add_draw_us from scrollrt.cpp / storm_svid.cpp), game-logic ms/tick,
+ * audio-pump ms/frame (mix), worst draw/tick/pump ms, average flip ms
  * (of_video_flip = cache clean + page swap), minimum buffered audio (aud=,
  * ~0 = ring ran dry), and injected-silence (gap=, the push-decoder zero-fill
  * that the ring level cannot see).  This instrumentation diagnosed the movie
  * pacing freeze, the palette-fade stall, and the audio-gap injection -- keep
  * it one flag away. */
 #ifdef OF_PERF_TRACE
-static unsigned g_perf_draw_us_acc, g_perf_draw_n;
+static unsigned g_perf_draw_us_acc, g_perf_draw_n, g_perf_draw_max_us;
+static unsigned g_perf_logic_us_acc, g_perf_logic_n, g_perf_logic_max_us;
+static unsigned g_perf_audio_us_acc, g_perf_audio_max_us;
 extern int g_perf_aud_min_pairs;                    /* of_aulib.cpp */
 extern "C" unsigned of_svid_zero_fill_samples;      /* push_aulib_decoder.cpp */
 extern "C" void of_perf_add_draw_us(unsigned us) {
 	g_perf_draw_us_acc += us;
 	g_perf_draw_n++;
+	if (us > g_perf_draw_max_us) g_perf_draw_max_us = us;
+}
+extern "C" void of_perf_add_logic_us(unsigned us) {
+	g_perf_logic_us_acc += us;
+	g_perf_logic_n++;
+	if (us > g_perf_logic_max_us) g_perf_logic_max_us = us;
+}
+extern "C" void of_perf_add_audio_us(unsigned us) {
+	g_perf_audio_us_acc += us;
+	if (us > g_perf_audio_max_us) g_perf_audio_max_us = us;
 }
 #endif
 
@@ -709,11 +753,19 @@ static void present_screen(void) {
 		}
 		const unsigned span = now_ms - perf_window_start_ms;
 		if (span >= 2000) {
-			printf("[of] perf: fps=%u.%u draw=%u.%ums flip=%u.%ums aud=%dms gap=%ums\n",
+			const unsigned draw = g_perf_draw_n ? g_perf_draw_us_acc / g_perf_draw_n : 0;
+			const unsigned logic = g_perf_logic_n ? g_perf_logic_us_acc / g_perf_logic_n : 0;
+			const unsigned mix = g_perf_audio_us_acc / perf_frames;
+			printf("[of] perf: fps=%u.%u draw=%u.%ums logic=%u.%ums mix=%u.%ums "
+			    "max(draw/logic/pump)=%u.%u/%u.%u/%u.%ums flip=%u.%ums aud=%dms gap=%ums\n",
 			    (perf_frames * 1000u) / span,
 			    ((perf_frames * 10000u) / span) % 10u,
-			    g_perf_draw_n ? g_perf_draw_us_acc / g_perf_draw_n / 1000u : 0u,
-			    g_perf_draw_n ? (g_perf_draw_us_acc / g_perf_draw_n / 100u) % 10u : 0u,
+			    draw / 1000u, (draw / 100u) % 10u,
+			    logic / 1000u, (logic / 100u) % 10u,
+			    mix / 1000u, (mix / 100u) % 10u,
+			    g_perf_draw_max_us / 1000u, (g_perf_draw_max_us / 100u) % 10u,
+			    g_perf_logic_max_us / 1000u, (g_perf_logic_max_us / 100u) % 10u,
+			    g_perf_audio_max_us / 1000u, (g_perf_audio_max_us / 100u) % 10u,
 			    perf_flip_us / perf_frames / 1000u,
 			    (perf_flip_us / perf_frames / 100u) % 10u,
 			    g_perf_aud_min_pairs >= 0 ? g_perf_aud_min_pairs / 48 : -1,
@@ -723,6 +775,12 @@ static void present_screen(void) {
 			perf_flip_us = 0;
 			g_perf_draw_us_acc = 0;
 			g_perf_draw_n = 0;
+			g_perf_draw_max_us = 0;
+			g_perf_logic_us_acc = 0;
+			g_perf_logic_n = 0;
+			g_perf_logic_max_us = 0;
+			g_perf_audio_us_acc = 0;
+			g_perf_audio_max_us = 0;
 			g_perf_aud_min_pairs = -1;
 			perf_window_start_ms = now_ms;
 		}
@@ -824,8 +882,11 @@ Uint64 SDL_GetTicks64(void){ return of_time_ms(); }
 Uint64 SDL_GetPerformanceCounter(void){ return of_time_us(); }
 Uint64 SDL_GetPerformanceFrequency(void){ return 1000000ULL; }
 void SDL_Delay(Uint32 ms){
+	const Uint32 start = of_time_ms();
 	of_aulib_pump();
-	while (ms-- > 0) {
+	// Audio decoding and scheduler oversleep count toward the requested delay.
+	// Unsigned elapsed time also handles the millisecond clock wrapping.
+	while (static_cast<Uint32>(of_time_ms() - start) < ms) {
 		usleep(1000);
 		of_aulib_pump();
 	}

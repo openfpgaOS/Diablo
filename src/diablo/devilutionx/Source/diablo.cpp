@@ -99,6 +99,10 @@
 #include <gperftools/heap-profiler.h>
 #endif
 
+#if defined(OPENFPGAOS) && defined(OF_PERF_TRACE)
+extern "C" void of_perf_add_logic_us(unsigned us);
+#endif
+
 namespace devilution {
 
 uint32_t glSeedTbl[NUMLEVELS];
@@ -1410,6 +1414,9 @@ void GameLogic()
 	if (!ProcessInput()) {
 		return;
 	}
+#if defined(OPENFPGAOS) && defined(OF_PERF_TRACE)
+	const uint32_t logicStart = static_cast<uint32_t>(SDL_GetPerformanceCounter());
+#endif
 	if (gbProcessPlayers) {
 		gGameLogicStep = GameLogicStep::ProcessPlayers;
 		ProcessPlayers();
@@ -1448,6 +1455,9 @@ void GameLogic()
 	pfile_update(false);
 
 	plrctrls_after_game_logic();
+#if defined(OPENFPGAOS) && defined(OF_PERF_TRACE)
+	of_perf_add_logic_us(static_cast<uint32_t>(SDL_GetPerformanceCounter()) - logicStart);
+#endif
 }
 
 void TimeoutCursor(bool bTimeout)
@@ -2463,6 +2473,14 @@ void SetCursorPos(Point position)
 
 void FreeGameMem()
 {
+	// Reloads need the same cleanup as level transitions. Duplicated effects
+	// retain sound buffers, and old player sprites otherwise survive until
+	// InitPlayerGFX, after the new monster roster has already been loaded.
+	sound_stop();
+	stream_stop();
+	for (Player &player : Players)
+		ResetPlayerGFX(player);
+
 	pDungeonCels = nullptr;
 	pMegaTiles = nullptr;
 	pSpecialCels = std::nullopt;

@@ -67,6 +67,11 @@ static int  g_frameSize = OF_MIX_BLOCK;
  * ~0 means the ring ran dry = audible underrun). Sampled in the pump before
  * refill; printed+reset by of_sdl2.cpp's perf line (extern there). */
 int g_perf_aud_min_pairs = -1;
+extern "C" void of_perf_add_audio_us(unsigned us);
+struct AudioPumpTimer {
+	unsigned start = of_time_us();
+	~AudioPumpTimer() { of_perf_add_audio_us(of_time_us() - start); }
+};
 #endif
 /* OS ring capacity in stereo pairs, measured at init (of_audio_free()
  * reports the full depth while the stream voice is inactive). */
@@ -615,6 +620,9 @@ extern "C" void of_aulib_stop_hw_sfx(void)
 extern "C" void of_aulib_pump(void)
 {
 	if (!g_inited) return;
+#ifdef OF_PERF_TRACE
+	const AudioPumpTimer timer;
+#endif
 	audio_lock();
 	if (g_output_suspended) {
 		silence_voice_locked();

@@ -3338,62 +3338,24 @@ void InitMonsterGFX(CMonster &monsterType)
 	const _monster_id mtype = monsterType.type;
 	const MonsterData &monsterData = MonstersData[mtype];
 	const size_t numAnims = GetNumAnims(monsterData);
-	const auto hasAnim = [&monsterData](size_t index) {
-		return monsterData.frames[index] != 0;
-	};
-	constexpr size_t MaxAnims = 6;
-	std::array<uint32_t, MaxAnims + 1> animOffsets;
-	if (!HeadlessMode) {
-		monsterType.animData = MultiFileLoader<MaxAnims> {}(
-		    numAnims,
-		    FileNameWithCharAffixGenerator({ "monsters\\", monsterData.assetsSuffix }, DEVILUTIONX_CL2_EXT, Animletter),
-		    animOffsets.data(),
-		    hasAnim);
-	}
-
-#ifndef UNPACKED_MPQS
-	if (!HeadlessMode) {
-		// Convert CL2 to CLX:
-		std::vector<std::vector<uint8_t>> clxData;
-		size_t accumulatedSize = 0;
-		for (size_t i = 0, j = 0; i < numAnims; ++i) {
-			if (!hasAnim(i))
-				continue;
-			const uint32_t begin = animOffsets[j];
-			const uint32_t end = animOffsets[j + 1];
-			clxData.emplace_back();
-			Cl2ToClx(reinterpret_cast<uint8_t *>(&monsterType.animData[begin]), end - begin,
-			    PointerOrValue<uint16_t> { monsterData.width }, clxData.back());
-			animOffsets[j] = accumulatedSize;
-			accumulatedSize += clxData.back().size();
-			++j;
-		}
-		animOffsets[clxData.size()] = accumulatedSize;
-		monsterType.animData = nullptr;
-		monsterType.animData = std::unique_ptr<byte[]>(new byte[accumulatedSize]);
-		for (size_t i = 0; i < clxData.size(); ++i) {
-			memcpy(&monsterType.animData[animOffsets[i]], clxData[i].data(), clxData[i].size());
-		}
-	}
-#endif
-
-	for (size_t i = 0, j = 0; i < numAnims; ++i) {
+	FileNameWithCharAffixGenerator path({ "monsters\\", monsterData.assetsSuffix }, "", Animletter);
+	// Load and convert one animation at a time. The old combined CL2 buffer,
+	// six growing conversion vectors, and final combined CLX allocation kept
+	// several full copies alive during memory-constrained level 16 reloads.
+	for (size_t i = 0; i < monsterType.animData.size(); ++i) {
 		AnimStruct &anim = monsterType.anims[i];
-		if (!hasAnim(i)) {
-			anim.frames = 0;
+		anim.sprites = std::nullopt;
+		monsterType.animData[i] = std::nullopt;
+		anim.frames = 0;
+		if (i >= numAnims || monsterData.frames[i] == 0)
 			continue;
-		}
 		anim.frames = monsterData.frames[i];
 		anim.rate = monsterData.rate[i];
 		anim.width = monsterData.width;
 		if (!HeadlessMode) {
-			const uint32_t begin = animOffsets[j];
-			const uint32_t end = animOffsets[j + 1];
-			auto spritesData = reinterpret_cast<uint8_t *>(&monsterType.animData[begin]);
-			const uint16_t numLists = GetNumListsFromClxListOrSheetBuffer(spritesData, end - begin);
-			anim.sprites = ClxSpriteListOrSheet { spritesData, numLists };
+			monsterType.animData[i] = LoadCl2ListOrSheet(path(i), PointerOrValue<uint16_t> { monsterData.width });
+			anim.sprites = ClxSpriteListOrSheet { *monsterType.animData[i] };
 		}
-		++j;
 	}
 
 	monsterType.data = &monsterData;
@@ -4024,9 +3986,11 @@ void ProcessMonsters()
 void FreeMonsters()
 {
 	for (CMonster &monsterType : LevelMonsterTypes) {
-		monsterType.animData = nullptr;
-		for (AnimStruct &animData : monsterType.anims) {
-			animData.sprites = std::nullopt;
+		for (AnimStruct &anim : monsterType.anims) {
+			anim.sprites = std::nullopt;
+		}
+		for (auto &data : monsterType.animData) {
+			data = std::nullopt;
 		}
 
 		for (auto &variants : monsterType.sounds) {

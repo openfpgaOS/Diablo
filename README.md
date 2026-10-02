@@ -142,12 +142,42 @@ core bitstream/OS (`runtime/`).
 
 ```bash
 make setup            # one-time: RISC-V toolchain
-cd src/diablo && make # builds app.elf and stages build/diablo/
+cd src/diablo && make # builds app.elf and stages build/pocket/diablo/
 make copy             # copy to an SD card at $POCKETDEV
 ```
 
 Developer documentation for the underlying SDK lives in
 [GETTING_STARTED.md](GETTING_STARTED.md) and [docs/SDK_README.md](docs/SDK_README.md).
+
+Run the host regression checks on Linux with a C++20 compiler:
+
+```bash
+python3 tools/check_diablo_regressions.py
+python3 tools/check_diablo_regressions.py --sanitize
+```
+
+These checks exercise the production sprite loader, level cleanup, SDL
+file streams and delays, frame pacing, and cached gamma conversion using
+generated assets and a simulated clock. Add `--perf` to compile the optional
+timing instrumentation. No game MPQs or FPGA are required;
+save/reload behavior on the Pocket still needs a hardware check.
+
+For hardware performance measurements, build with `make -C src/diablo PERF=1`
+and run the resulting image on the Pocket. The serial console prints a
+`[of] perf:` line every two seconds: FPS, average render/movie decode time
+(`draw`), average game tick time (`logic`), total audio-pump time per presented
+frame (`mix`), worst individual draw/tick/pump duration (`max(draw/logic/pump)`),
+average buffer-flip time (`flip`), minimum buffered audio (`aud`), and movie
+silence inserted because decoded audio was unavailable (`gap`). Times are
+elapsed milliseconds; draw/logic can include audio pumps, so the timings
+overlap and should not be added together. Logic ticks and presented frames
+also run at different rates. Compare the same save and scene with the same
+graphics settings; average FPS alone can hide stalls. Rebuild with `PERF=0`
+to remove the instrumentation. Changing build flags automatically rebuilds
+the affected build configuration.
+
+Release preparation and the changes in 1.1.0 are documented in
+[the release notes](docs/releases/diablo-v1.1.0.md).
 
 ## Credits
 

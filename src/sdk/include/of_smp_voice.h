@@ -60,6 +60,8 @@ typedef struct {
     uint8_t hw_index;     /* HW mixer voice index (0..31), cached at note-on.
                              Lets orphan reaping match by index when the mixer
                              handle's generation goes stale.  0xFF = unknown. */
+    uint8_t cached_env_volume; /* Clamped envelope input used for L/R volume. */
+    uint8_t update_flags;      /* Pitch routing and pending controller changes. */
     uint64_t mixer_voice; /* stable hardware mixer handle */
     env_state_t vol_env;
     env_state_t mod_env;

@@ -22,6 +22,7 @@
 
 #include "include/of_smp_bank.h"
 #include "include/of_services.h"
+#include "include/of_smp_bank_validate.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -51,14 +52,11 @@ int of_smp_bank_bind_preloaded(void)
     if (hdr->magic != OFSF_MAGIC || hdr->version != OFSF_VERSION)
         return -1;
 
+    if (!of_smp_bank_valid(buf, preload_size))
+        return -2;
+
     uint32_t preset_bytes = OFSF_PRESET_COUNT * sizeof(ofsf_preset_t);
     uint32_t zone_bytes = hdr->zone_count * sizeof(ofsf_zone_t);
-    uint32_t metadata_end = sizeof(ofsf_header_t) + preset_bytes + zone_bytes;
-    if (hdr->zone_count == 0 ||
-        metadata_end > preload_size ||
-        hdr->sample_data_offset > preload_size ||
-        hdr->sample_data_size > preload_size - hdr->sample_data_offset)
-        return -2;
 
     const uint8_t *base = (const uint8_t *)buf;
 

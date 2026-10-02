@@ -176,7 +176,8 @@ enum class MonsterSound : uint8_t {
 };
 
 struct CMonster {
-	std::unique_ptr<byte[]> animData;
+	// Own each animation separately so loading never needs a second full roster buffer.
+	std::array<OptionalOwnedClxSpriteListOrSheet, 6> animData;
 	AnimStruct anims[6];
 	std::unique_ptr<TSnd> sounds[4][2];
 	const MonsterData *data;

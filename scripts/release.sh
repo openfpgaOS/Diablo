@@ -160,8 +160,9 @@ fi
 DB_ZIP="$SDK_DIR/releases/$TARGET/$CORE.json.zip"
 DB_INI="$SDK_DIR/releases/$TARGET/$CORE.downloader.ini"
 
+# Only image bundles use Downloader assets; APF always publishes one ZIP.
 ASSETS=()
-if [ -f "$DB_ZIP" ]; then
+if [ "$PLATFORM_BUNDLE_KIND" = "image" ] && [ -f "$DB_ZIP" ]; then
     if [ -d "$BUNDLE" ]; then
         while IFS= read -r f; do ASSETS+=("$f"); done < <(find "$BUNDLE" -type f | sort)
     fi
@@ -176,7 +177,7 @@ fi
 # bundle, and two different sd_paths sharing one basename (flat assets are keyed
 # by basename, so the second upload clobbers the first).  Check both BEFORE
 # creating the release.
-if [ -f "$DB_ZIP" ]; then
+if [ "$PLATFORM_BUNDLE_KIND" = "image" ] && [ -f "$DB_ZIP" ]; then
     _assets_list="$(mktemp)"
     printf '%s\n' "${ASSETS[@]}" > "$_assets_list"
     _db_check="$(mktemp)"
@@ -243,7 +244,7 @@ echo -e "${CYAN}─────────────────────�
 sed 's/^/    /' "$NOTES_FILE"
 echo -e "${CYAN}────────────────────────────────────────────────────${RESET}"
 
-gh release create "$TAG" "$ZIP" "${ASSETS[@]}" \
+gh release create "$TAG" "$ZIP" ${ASSETS[@]+"${ASSETS[@]}"} \
     --target "$(git rev-parse HEAD)" \
     --title "$TITLE" \
     --notes-file "$NOTES_FILE" \

@@ -67,11 +67,10 @@ DEFS := -DNONET -DOPENFPGAOS -DDVL_NO_FILESYSTEM -DDEVILUTIONX_DISABLE_RTTI -DDE
         -DDEVILUTIONX_PALETTE_TRANSPARENCY_BLACK_16_LUT=1
 
 # `make PERF=1`: serial frame/audio telemetry every 2 s
-#   [of] perf: fps=A.B draw=C.Cms flip=D.Dms aud=Ems gap=Fms
-# draw = world render (in-game) or SVid decode (movies); aud = MIN buffered
-# audio in the window (~0 = ring ran dry); gap = silence the movie push-
-# decoder injected (supply deficit the ring level cannot show). Costs a few
-# us/frame; default OFF.
+# draw = world render or movie decode, logic = game tick, mix = audio pump
+# time/frame, max(draw/logic/pump) = worst individual call, flip = page swap,
+# aud = minimum buffered audio (~0 = ring ran dry), gap = movie silence
+# injected by the push decoder. Default OFF; see README.md for interpretation.
 ifeq ($(PERF),1)
   DEFS += -DOF_PERF_TRACE
 endif
@@ -154,6 +153,9 @@ PKW_OBJS := $(foreach s,$(PKW_SRCS),$(call obj,$(s)))
 LOC_OBJS := $(foreach s,$(LOC_CXX) $(LOC_C),$(call obj,$(s)))
 ALL_OBJS := $(DX_OBJS) $(FMT_OBJS) $(MPQ_OBJS) $(BZIP2_OBJS) $(SMK_OBJS) $(PKW_OBJS) $(LOC_OBJS)
 
+# Rebuild consumers when shared structures or inline SDK APIs change.
+-include $(ALL_OBJS:.o=.d)
+
 # ── Speed build for hot translation units (DEFAULT ON) ────────────────
 # The whole tree defaults to -Os (see BASE_OPT above); HOT_OPT compiles
 # only the speed-critical TUs at a higher level:
@@ -195,17 +197,26 @@ $(call obj,$(TP)/libsmackerdec/src/BitReader.cpp): CXXFLAGS += -O3
 
 .DEFAULT_GOAL := all
 
+# A Makefile prerequisite alone does not catch command-line flag changes.
+# Snapshot the global flags before target-specific additions, and keep the
+# stamp's mtime stable when unchanged so normal builds remain incremental.
+BUILD_CONFIG := $(CC) $(CFLAGS) $(CXX) $(CXXFLAGS) $(HOT_OPT) $(LDFLAGS) $(LIBS) $(CRT) $(ALL_OBJS)
+shell_quote = '$(subst ','"'"',$(1))'
+$(OBJDIR)/build-config: FORCE_BUILD_CONFIG
+	@mkdir -p $(dir $@)
+	@printf '%s\n' $(call shell_quote,$(BUILD_CONFIG)) > $@.tmp
+	@if ! cmp -s $@.tmp $@; then mv $@.tmp $@; else rm -f $@.tmp; fi
+.PHONY: FORCE_BUILD_CONFIG
+FORCE_BUILD_CONFIG:
+
 # Generic compile rule: the object's stem (everything between $(OBJDIR)/ and
 # .o) is the source path relative to $(ROOT), so $(ROOT)/% is the source and
-# also the prerequisite (so edits trigger rebuilds).  The Makefile itself is
-# a prerequisite so flag changes (HOT_OPT, DEFS, ...) rebuild stale objects —
-# without it, A/B runs like `make HOT_OPT=` silently compare identical
-# binaries built with the old flags.
-$(OBJDIR)/%.o: $(ROOT)/% $(CURDIR)/Makefile
+# also the prerequisite (so edits trigger rebuilds).
+$(OBJDIR)/%.o: $(ROOT)/% $(CURDIR)/Makefile $(OBJDIR)/build-config
 	@mkdir -p $(dir $@)
 	@case "$<" in \
-	  *.cpp|*.cc) echo "CXX $*"; $(CXX) $(CXXFLAGS) -c -o $@ "$<" ;; \
-	  *.c)        echo "CC  $*"; $(CC)  $(CFLAGS)  -c -o $@ "$<" ;; \
+	  *.cpp|*.cc) echo "CXX $*"; $(CXX) $(CXXFLAGS) -MMD -MP -c -o $@ "$<" ;; \
+	  *.c)        echo "CC  $*"; $(CC)  $(CFLAGS)  -MMD -MP -c -o $@ "$<" ;; \
 	esac
 
 # ── Container build guard (mirrors sdk.mk) — CONTAINERIZED BY DEFAULT ──
@@ -237,7 +248,9 @@ SDK_FORCE:
 
 else
 
-app.elf: $(ALL_OBJS)
+# SDK refreshes replace these archives/startup objects without touching game
+# sources. Relink against them even when all compilation units are unchanged.
+app.elf: $(ALL_OBJS) $(OBJDIR)/build-config $(CRT) $(MUSL)/lib/libc.a $(MUSL)/lib/libm.a $(LIBSTDCXX) $(LIBSUPCXX) $(LIBGCC)
 	@echo "LD  $@ ($(words $(ALL_OBJS)) objects)"
 	$(CXX) $(LDFLAGS) -o $@ $(CRT) $(ALL_OBJS) $(LIBS)
 	@$(SIZE) $@ 2>/dev/null || true

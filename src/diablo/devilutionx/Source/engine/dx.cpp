@@ -12,6 +12,7 @@
 #include "engine.h"
 #include "options.h"
 #include "utils/display.h"
+#include "utils/frame_limiter.hpp"
 #include "utils/log.hpp"
 #include "utils/sdl_wrap.h"
 
@@ -82,16 +83,13 @@ bool CanRenderDirectlyToOutputSurface()
  */
 void LimitFrameRate()
 {
-	if (*sgOptions.Graphics.frameRateControl != FrameRateControl::CPUSleep)
-		return;
-	static uint32_t frameDeadline;
-	uint32_t tc = SDL_GetTicks() * 1000;
-	uint32_t v = 0;
-	if (frameDeadline > tc) {
-		v = tc % refreshDelay;
-		SDL_Delay(v / 1000 + 1); // ceil
-	}
-	frameDeadline = tc + v + refreshDelay;
+	static FrameLimiter limiter;
+	const uint32_t interval = *sgOptions.Graphics.frameRateControl == FrameRateControl::CPUSleep && refreshDelay > 0
+	    ? static_cast<uint32_t>(refreshDelay)
+	    : 0;
+	const uint32_t delay = limiter.GetDelay(interval != 0 ? SDL_GetTicks() : 0, interval);
+	if (delay != 0)
+		SDL_Delay(delay);
 }
 
 } // namespace

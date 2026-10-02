@@ -15,6 +15,9 @@ namespace devilution {
 uint16_t Cl2ToClx(const uint8_t *data, size_t size,
     PointerOrValue<uint16_t> widthOrWidths, std::vector<uint8_t> &clxData)
 {
+	// CLX keeps CL2 pixel encoding and uses smaller frame headers. Reserve
+	// the input size to avoid repeated large reallocations during level loads.
+	clxData.reserve(size);
 	uint32_t numGroups = 1;
 	const uint32_t maybeNumFrames = LoadLE32(data);
 	const uint8_t *groupBegin = data;
