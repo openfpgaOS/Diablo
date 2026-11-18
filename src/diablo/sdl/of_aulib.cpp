@@ -429,10 +429,12 @@ bool Stream::mixInto(int32_t *accum, int frames)
 	 * the D extension and soft-FP doubles in this hot loop were costing
 	 * tens of cycles per output frame per stream. */
 	const float step = (float)rate / (float)OF_OUT_RATE;
-	/* Per-stream scale at 0.5 of full s16 so two simultaneous streams
-	 * (music + a single SFX) sum without clipping. The pump still saturates
-	 * as a safety net for many simultaneous sounds. Without this, multi-stream
-	 * audio clipped into square-wave distortion that sounds like breaking up.
+	/* Per-stream scale at unity (full s16), matching what the HW-mixer SFX
+	 * voices get. This used to be 0.5 for inter-stream headroom, which left
+	 * music/speech/movie audio 6 dB under the SFX and very quiet overall
+	 * (openfpgaOS/Diablo#1). The HW mixer's own mix-down still attenuates
+	 * the ring voice, and the pump saturates the s32 sum as the safety net
+	 * for overlapping streams (music + speech).
 	 *
 	 * volume_/leftGain_/rightGain_ only change from outside the pump
 	 * (setVolume/setStereoPosition), so the scale is loop-invariant across
@@ -440,8 +442,8 @@ bool Stream::mixInto(int32_t *accum, int frames)
 	 * loop from 3 fmul.s per channel per output frame to 1 -- soft-FP-free
 	 * already (rv32imafc has a single-precision FPU), but fewer ops per frame
 	 * per stream still matters in the audio hot path. */
-	const float lscale = volume_ * leftGain_ * 16384.0F;
-	const float rscale = volume_ * rightGain_ * 16384.0F;
+	const float lscale = volume_ * leftGain_ * 32767.0F;
+	const float rscale = volume_ * rightGain_ * 32767.0F;
 
 	/* Keep srcPos_ from outgrowing the float mantissa. srcPos_ is the absolute
 	 * source-frame position; left unbounded it passes ~2^24 after a few minutes

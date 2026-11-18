@@ -1,3 +1,7 @@
+# Scoped Pocket refresh 2026-11-17 (openfpgaOS v0.9.1, source e5ab770):
+# pocket/os20.rbf_r (seed 25, worst-corner Fmax estimate 94.66 MHz, setup
+# -0.564 ns at the configured 100 MHz; not 100 MHz timing closure) and
+# pocket/os.bin.  Other entries retain their prior provenance.
 # openfpgaOS runtime publish manifest — written by 'make sdk'.
 # Consumers (platforms/<t>/image.sh) verify staged artifacts against
 # these md5s; a mismatch means a hand-mixed runtime set, which boots
@@ -8,8 +12,8 @@ dbbe04bfc0291c709b3e8792c788feec  ./mister/openfpgaOS.rbf
 1e267263ade2594c2e84973a3231c779  ./mister/os.bin
 370276df9ffd79d3c8ddd6b48a54023e  ./pocket/ap_core.sof
 48c625e82daf68d14680893ac8cb27af  ./pocket/loader.bin
-9ae379b63ff6e8b43e9bd33e83ec0172  ./pocket/os20.rbf_r
+1c770dd901042f7d870dea354d95665d  ./pocket/os20.rbf_r
 c8c0ba3703d7f1e0b54a862d8888c16b  ./pocket/os25.rbf_r
 3a960eeb817d8bd4e4f7d789e29e7f20  ./pocket/os25zf.rbf_r
 04d2fddcc76079441d22875313590b61  ./pocket/os30.rbf_r
-bd9a5a7ecdada8625f01b691f82e3784  ./pocket/os.bin
+86c03e6f258852e290d1b67993f799e9  ./pocket/os.bin
