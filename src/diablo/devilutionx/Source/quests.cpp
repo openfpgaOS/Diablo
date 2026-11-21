@@ -805,7 +805,11 @@ void DrawQuestLog(const Surface &out)
 		SelectedQuest = l;
 	}
 	const auto x = InnerPanel.position.x;
+#ifdef OPENFPGAOS
+	ClxDrawPanel(out, GetPanelPosition(UiPanels::Quest, { 0, 351 }), (*pQLogCel)[0], ClxPanelId::QuestLog);
+#else
 	ClxDraw(out, GetPanelPosition(UiPanels::Quest, { 0, 351 }), (*pQLogCel)[0]);
+#endif
 	int y = InnerPanel.position.y + ListYOffset;
 	for (int i = 0; i < EncounteredQuestCount; i++) {
 		if (i == FirstFinishedQuest) {

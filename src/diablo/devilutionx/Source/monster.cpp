@@ -636,9 +636,21 @@ void UpdateEnemy(Monster &monster)
 			}
 		}
 	}
+#ifdef OPENFPGAOS
+	// [of] A monster that is neither a golem nor berserk only ever targets
+	// golems (the second clause of the skip test below), so test that first:
+	// every check in this loop is a pure read, so skipping earlier gives the
+	// same result, and the usual all-monsters-vs-all-monsters pass no longer
+	// computes a walking distance and room comparison per pair.
+	const bool targetsGolemsOnly = (monster.flags & (MFLAG_GOLEM | MFLAG_BERSERK)) == 0;
+#endif
 	for (size_t i = 0; i < ActiveMonsterCount; i++) {
 		const int monsterId = ActiveMonsters[i];
 		Monster &otherMonster = Monsters[monsterId];
+#ifdef OPENFPGAOS
+		if (targetsGolemsOnly && (otherMonster.flags & MFLAG_GOLEM) == 0)
+			continue;
+#endif
 		if (&otherMonster == &monster)
 			continue;
 		if ((otherMonster.hitPoints >> 6) <= 0)

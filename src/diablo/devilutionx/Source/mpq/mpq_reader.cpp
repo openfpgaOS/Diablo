@@ -110,6 +110,13 @@ std::unique_ptr<byte[]> MpqArchive::ReadFile(const char *filename, std::size_t &
 	return result;
 }
 
+#ifdef OPENFPGAOS
+int32_t MpqArchive::GetRawRange(uint32_t fileNumber, std::FILE **fp, std::uint64_t *start, std::uint64_t *size) const
+{
+	return libmpq__file_raw_range(archive_, fileNumber, fp, start, size);
+}
+#endif
+
 int32_t MpqArchive::ReadBlock(uint32_t fileNumber, uint32_t blockNumber, uint8_t *out, uint32_t outSize)
 {
 	std::vector<std::uint8_t> &tmpBuf = GetTemporaryBuffer(outSize);

@@ -7,6 +7,9 @@
 
 #include <array>
 #include <cstdint>
+#ifdef OPENFPGAOS
+#include <cstring>
+#endif
 
 #include <function_ref.hpp>
 
@@ -54,11 +57,69 @@ PathNode PathNodes[MaxPathNodes];
 /** A linked list of the A* frontier, sorted by distance */
 PathNode *Path2Nodes;
 
+#ifdef OPENFPGAOS
+/* [of] Position index for the frontier/visited lookups.
+ *
+ * GetNode1/GetNode2 used to walk the frontier and visited lists for every
+ * neighbour of every expanded node, so a search that fails after expanding
+ * all MaxPathNodes nodes costs on the order of a million cycles on the
+ * 100 MHz rv32 core.  Every node in either list has a unique position (case 3
+ * of ParentPath only creates a node when the position is in neither list), so
+ * a position -> node table plus a per-node list tag answers both lookups with
+ * the same result the list walk returns.  Entries carry a search generation,
+ * so nothing needs clearing between searches.  Positions outside the table
+ * fall back to the list walk. */
+enum : uint8_t { NodeInNoList, NodeOnFrontier, NodeVisited };
+uint32_t NodeIndexAt[MAXDUNX][MAXDUNY]; // (generation << 10) | node index
+/* [of] posOk memo for the current search: (generation << 1) | result. A
+ * search evaluates the same tile from several neighbours; posOk only reads
+ * dungeon/actor state that FindPath does not change, so within one search
+ * the first answer is the answer. Matters most for unreachable targets
+ * (a held click on a wall), which expand all MaxPathNodes nodes. */
+uint32_t PosOkMemo[MAXDUNX][MAXDUNY];
+uint8_t NodeList[MaxPathNodes];
+uint32_t SearchGeneration;
+
+bool NodeIndexable(Point position)
+{
+	return position.x >= 0 && position.x < MAXDUNX && position.y >= 0 && position.y < MAXDUNY;
+}
+
+void IndexNode(uint16_t index)
+{
+	const PathNode &node = PathNodes[index];
+	if (NodeIndexable(node.position()))
+		NodeIndexAt[node.x][node.y] = (SearchGeneration << 10) | index;
+}
+
+uint16_t IndexedNode(Point position, uint8_t list)
+{
+	const uint32_t entry = NodeIndexAt[position.x][position.y];
+	if ((entry >> 10) != SearchGeneration)
+		return PathNode::InvalidIndex;
+	const uint16_t index = entry & 0x3FF;
+	return NodeList[index] == list ? index : PathNode::InvalidIndex;
+}
+
+void StartSearchIndex()
+{
+	if (++SearchGeneration >= (1u << 22)) {
+		std::memset(NodeIndexAt, 0, sizeof(NodeIndexAt));
+		std::memset(PosOkMemo, 0, sizeof(PosOkMemo));
+		SearchGeneration = 1;
+	}
+}
+#endif
+
 /**
  * @brief return a node for a position on the frontier, or NULL if not found
  */
 uint16_t GetNode1(Point targetPosition)
 {
+#ifdef OPENFPGAOS
+	if (NodeIndexable(targetPosition))
+		return IndexedNode(targetPosition, NodeOnFrontier);
+#endif
 	uint16_t result = Path2Nodes->nextNodeIndex;
 	while (result != PathNode::InvalidIndex) {
 		if (PathNodes[result].position() == targetPosition)
@@ -73,6 +134,9 @@ uint16_t GetNode1(Point targetPosition)
  */
 void NextNode(uint16_t front)
 {
+#ifdef OPENFPGAOS
+	NodeList[front] = NodeOnFrontier;
+#endif
 	if (Path2Nodes->nextNodeIndex == PathNode::InvalidIndex) {
 		Path2Nodes->nextNodeIndex = front;
 		return;
@@ -97,6 +161,10 @@ PathNode *VisitedNodes;
  */
 uint16_t GetNode2(Point targetPosition)
 {
+#ifdef OPENFPGAOS
+	if (NodeIndexable(targetPosition))
+		return IndexedNode(targetPosition, NodeVisited);
+#endif
 	uint16_t result = VisitedNodes->nextNodeIndex;
 	while (result != PathNode::InvalidIndex) {
 		if (PathNodes[result].position() == targetPosition)
@@ -119,6 +187,9 @@ uint16_t GetNextPath()
 	Path2Nodes->nextNodeIndex = PathNodes[result].nextNodeIndex;
 	PathNodes[result].nextNodeIndex = VisitedNodes->nextNodeIndex;
 	VisitedNodes->nextNodeIndex = result;
+#ifdef OPENFPGAOS
+	NodeList[result] = NodeVisited;
+#endif
 	return result;
 }
 
@@ -133,6 +204,9 @@ uint16_t NewStep()
 		return PathNode::InvalidIndex;
 
 	PathNodes[gdwCurNodes] = {};
+#ifdef OPENFPGAOS
+	NodeList[gdwCurNodes] = NodeInNoList;
+#endif
 	return gdwCurNodes++;
 }
 
@@ -280,6 +354,9 @@ bool ParentPath(uint16_t pathIndex, Point candidatePosition, Point destinationPo
 			dxdy.f = nextG + dxdy.h;
 			dxdy.x = static_cast<int16_t>(candidatePosition.x);
 			dxdy.y = static_cast<int16_t>(candidatePosition.y);
+#ifdef OPENFPGAOS
+			IndexNode(dxdyIndex);
+#endif
 			// add it to the frontier
 			NextNode(dxdyIndex);
 			path.addChild(dxdyIndex);
@@ -298,7 +375,22 @@ bool GetPath(tl::function_ref<bool(Point)> posOk, uint16_t pathIndex, Point dest
 	for (Displacement dir : PathDirs) {
 		const PathNode &path = PathNodes[pathIndex];
 		const Point tile = path.position() + dir;
+#ifdef OPENFPGAOS
+		bool ok;
+		if (NodeIndexable(tile)) {
+			uint32_t &memo = PosOkMemo[tile.x][tile.y];
+			if ((memo >> 1) == SearchGeneration) {
+				ok = (memo & 1) != 0;
+			} else {
+				ok = posOk(tile);
+				memo = (SearchGeneration << 1) | (ok ? 1u : 0u);
+			}
+		} else {
+			ok = posOk(tile);
+		}
+#else
 		const bool ok = posOk(tile);
+#endif
 		if ((ok && path_solid_pieces(path.position(), tile)) || (!ok && tile == destination)) {
 			if (!ParentPath(pathIndex, tile, destination))
 				return false;
@@ -375,6 +467,9 @@ int FindPath(tl::function_ref<bool(Point)> posOk, Point startPosition, Point des
 
 	// clear all nodes, create root nodes for the visited/frontier linked lists
 	gdwCurNodes = 0;
+#ifdef OPENFPGAOS
+	StartSearchIndex();
+#endif
 	Path2Nodes = &PathNodes[NewStep()];
 	VisitedNodes = &PathNodes[NewStep()];
 	gdwCurPathStep = 0;
@@ -386,6 +481,10 @@ int FindPath(tl::function_ref<bool(Point)> posOk, Point startPosition, Point des
 	pathStart.h = GetHeuristicCost(startPosition, destinationPosition);
 	pathStart.g = 0;
 	Path2Nodes->nextNodeIndex = pathStartIndex;
+#ifdef OPENFPGAOS
+	NodeList[pathStartIndex] = NodeOnFrontier;
+	IndexNode(pathStartIndex);
+#endif
 	// A* search until we find (dx,dy) or fail
 	uint16_t nextNodeIndex;
 	while ((nextNodeIndex = GetNextPath()) != PathNode::InvalidIndex) {

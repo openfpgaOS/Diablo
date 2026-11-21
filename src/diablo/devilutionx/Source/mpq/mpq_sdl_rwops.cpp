@@ -5,6 +5,10 @@
 #include <memory>
 #include <vector>
 
+#ifdef OPENFPGAOS
+#include "platform/of_mpq_prefetch.h"
+#endif
+
 namespace devilution {
 
 namespace {
@@ -228,5 +232,25 @@ SDL_RWops *SDL_RWops_FromMpqFile(MpqArchive &mpqArchive, uint32_t fileNumber, co
 	SetData(result.get(), data.release());
 	return result.release();
 }
+
+#ifdef OPENFPGAOS
+void SDL_RWops_MpqStartReadAhead(SDL_RWops *rwops)
+{
+	// Only streams that own a cloned archive: the handle is private to this
+	// stream, so serving its block reads from the ring cannot affect any
+	// other reader, and closing the stream (archive close) detaches it.
+	if (rwops == nullptr || rwops->read != &MpqFileRwRead)
+		return;
+	Data &data = *GetData(rwops);
+	if (!data.ownedArchive)
+		return;
+	std::FILE *fp = nullptr;
+	std::uint64_t start = 0;
+	std::uint64_t size = 0;
+	if (data.mpqArchive->GetRawRange(data.fileNumber, &fp, &start, &size) != 0)
+		return;
+	of_mpq_prefetch_attach(fp, data.mpqArchive->GetPath().c_str(), start, size);
+}
+#endif
 
 } // namespace devilution

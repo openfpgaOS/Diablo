@@ -301,7 +301,11 @@ void FreeCharPanel()
 void DrawChr(const Surface &out)
 {
 	Point pos = GetPanelPosition(UiPanels::Character, { 0, 0 });
+#ifdef OPENFPGAOS
+	RenderClxSpritePanel(out, (*Panel)[0], pos, ClxPanelId::Character);
+#else
 	RenderClxSprite(out, (*Panel)[0], pos);
+#endif
 	for (auto &entry : panelEntries) {
 		if (entry.statDisplayFunc) {
 			StyledText tmp = (*entry.statDisplayFunc)();

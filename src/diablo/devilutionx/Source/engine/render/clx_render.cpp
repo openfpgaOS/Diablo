@@ -8,6 +8,10 @@
 #include <algorithm>
 #include <cstdint>
 #include <utility>
+#ifdef OPENFPGAOS
+#include <cstdlib>
+#include <cstring>
+#endif
 
 #include "engine/point.hpp"
 #include "engine/render/blit_impl.hpp"
@@ -613,5 +617,206 @@ void ClearClxDrawCache()
 {
 	OutlinePixelsCache.spriteData = nullptr;
 }
+
+#ifdef OPENFPGAOS
+namespace {
+
+/* [of] Flat copies of the side-panel backgrounds. ClxDraw decodes the panel's
+ * RLE runs every frame (~5-6 instructions per pixel for 320x352 panels, about
+ * 0.4-0.5 M cycles per open panel on the 100 MHz core); a decoded copy is
+ * drawn with row memcpy (opaque) or one masked word store per 4 pixels.
+ * Identity: the copy is decoded with ClxDraw's own run walk (PanelWalk), so
+ * every opaque byte holds what ClxDraw writes there and every transparent byte
+ * is marked to keep the destination. Validity: sprite data pointer, size and a
+ * 64-sample fingerprint of the encoded data. Copies unused for ~10 s and all
+ * copies at level teardown are freed (a reopened panel decodes once again). */
+struct PanelCopy {
+	const uint8_t *source;
+	uint32_t fingerprint;
+	uint16_t width;
+	uint16_t height;
+	uint8_t *pixels; // width * height, top row first; 0 where transparent
+	uint8_t *keep;   // 0xFF where transparent, else 0; nullptr when fully opaque
+	uint32_t lastUse;
+	bool failed;     // allocation failed for this fingerprint: use ClxDraw
+};
+
+PanelCopy PanelCopies[static_cast<size_t>(ClxPanelId::Count)];
+uint32_t PanelFrame;
+constexpr uint32_t PanelIdleFrames = 300; // ~10 s at 30 fps
+
+uint32_t PanelFingerprint(ClxSprite clx)
+{
+	const uint8_t *p = clx.pixelData();
+	const uint32_t n = clx.pixelDataSize();
+	uint32_t h = (n * 2654435761u) ^ (static_cast<uint32_t>(clx.width()) << 16 | clx.height());
+	if (n == 0)
+		return h;
+	for (uint32_t k = 0; k < 64; ++k)
+		h = (h ^ p[static_cast<uint32_t>((static_cast<uint64_t>(n) * k) >> 6)]) * 16777619u;
+	return h;
+}
+
+void PanelRelease(PanelCopy &c)
+{
+	std::free(c.pixels);
+	std::free(c.keep);
+	c = PanelCopy {};
+}
+
+/* Walk the sprite's runs the way the unclipped DoRenderBackwardsClipY does
+ * (rows bottom-up; runs: opaque fill / opaque pixels / transparent skip, where
+ * a transparent skip may run over into following rows). With `pixels` null it
+ * only reports whether any transparent run exists; otherwise it writes the
+ * opaque bytes (and, if `keep` is set, clears their keep bytes). Returns false
+ * for an opaque run that would cross the end of its row (never produced by the
+ * CLX encoder; ClxDraw would write it into the destination row to the right),
+ * so such sprites simply keep using ClxDraw. */
+bool PanelWalk(ClxSprite clx, uint8_t *pixels, uint8_t *keep, bool *transparent)
+{
+	const int w = clx.width();
+	const int h = clx.height();
+	const uint8_t *src = clx.pixelData();
+	const uint8_t *const end = src + clx.pixelDataSize();
+	int y = h - 1;
+	int_fast16_t xOffset = 0;
+	bool anyTransparent = false;
+	while (src != end && y >= 0) {
+		int_fast16_t remainingWidth = static_cast<int_fast16_t>(w) - xOffset;
+		const size_t row = static_cast<size_t>(y) * w;
+		int x = xOffset;
+		while (remainingWidth > 0) {
+			uint8_t v = *src++;
+			if (IsClxOpaque(v)) {
+				if (IsClxOpaqueFill(v)) {
+					v = GetClxOpaqueFillWidth(v);
+					if (v > remainingWidth)
+						return false;
+					const uint8_t color = *src++;
+					if (pixels != nullptr)
+						std::memset(pixels + row + x, color, v);
+				} else {
+					v = GetClxOpaquePixelsWidth(v);
+					if (v > remainingWidth)
+						return false;
+					if (pixels != nullptr)
+						std::memcpy(pixels + row + x, src, v);
+					src += v;
+				}
+				if (keep != nullptr)
+					std::memset(keep + row + x, 0, v);
+			} else {
+				anyTransparent = true;
+			}
+			x += v;
+			remainingWidth -= v;
+		}
+		const SkipSize skipSize = GetSkipSize(remainingWidth, static_cast<int_fast16_t>(w));
+		xOffset = skipSize.xOffset;
+		y -= static_cast<int>(skipSize.wholeLines);
+	}
+	// Rows the run stream never reached are transparent too.
+	if (y >= 0 || xOffset != 0)
+		anyTransparent = true;
+	if (transparent != nullptr)
+		*transparent = anyTransparent;
+	return true;
+}
+
+bool PanelBuild(PanelCopy &c, ClxSprite clx, uint32_t fingerprint)
+{
+	OfReleasePanelCaches = ClxPanelCachesRelease;
+	const size_t size = static_cast<size_t>(clx.width()) * clx.height();
+	c.source = clx.pixelData();
+	c.fingerprint = fingerprint;
+	c.width = clx.width();
+	c.height = clx.height();
+	bool transparent = true;
+	bool ok = PanelWalk(clx, nullptr, nullptr, &transparent);
+	if (ok) {
+		c.pixels = static_cast<uint8_t *>(std::malloc(size));
+		if (transparent)
+			c.keep = static_cast<uint8_t *>(std::malloc(size));
+		ok = c.pixels != nullptr && (!transparent || c.keep != nullptr);
+	}
+	if (ok && transparent) {
+		std::memset(c.pixels, 0, size);
+		std::memset(c.keep, 0xFF, size);
+	}
+	if (ok)
+		ok = PanelWalk(clx, c.pixels, c.keep, nullptr);
+	if (!ok) {
+		std::free(c.pixels);
+		std::free(c.keep);
+		c.pixels = nullptr;
+		c.keep = nullptr;
+		c.failed = true;
+	}
+	return ok;
+}
+
+} // namespace
+
+void ClxDrawPanel(const Surface &out, Point position, ClxSprite clx, ClxPanelId id)
+{
+	PanelCopy &c = PanelCopies[static_cast<size_t>(id)];
+	const int w = clx.width();
+	const int h = clx.height();
+	const int top = position.y - h + 1;
+	if (w == 0 || h == 0 || position.x < 0 || position.x + w > out.w() || top < 0 || position.y >= out.h()) {
+		ClxDraw(out, position, clx);
+		return;
+	}
+	const uint32_t fingerprint = PanelFingerprint(clx);
+	if (c.source != clx.pixelData() || c.fingerprint != fingerprint || c.width != w || c.height != h) {
+		PanelRelease(c);
+		if (!PanelBuild(c, clx, fingerprint)) {
+			ClxDraw(out, position, clx);
+			return;
+		}
+	} else if (c.failed) {
+		ClxDraw(out, position, clx);
+		return;
+	}
+	c.lastUse = PanelFrame;
+	uint8_t *dst = out.at(position.x, top);
+	const int pitch = out.pitch();
+	const uint8_t *src = c.pixels;
+	if (c.keep == nullptr) {
+		for (int y = 0; y < h; ++y, dst += pitch, src += w)
+			std::memcpy(dst, src, w);
+		return;
+	}
+	const uint8_t *keep = c.keep;
+	const bool words = ((reinterpret_cast<uintptr_t>(dst) | static_cast<uintptr_t>(pitch) | static_cast<uintptr_t>(w)) & 3) == 0;
+	for (int y = 0; y < h; ++y, dst += pitch, src += w, keep += w) {
+		if (words) {
+			auto *d32 = reinterpret_cast<OfWord *>(dst);
+			const auto *s32 = reinterpret_cast<const OfWord *>(src);
+			const auto *k32 = reinterpret_cast<const OfWord *>(keep);
+			for (int x = 0; x < w / 4; ++x)
+				d32[x] = (d32[x] & k32[x]) | s32[x];
+		} else {
+			for (int x = 0; x < w; ++x)
+				dst[x] = static_cast<uint8_t>((dst[x] & keep[x]) | src[x]);
+		}
+	}
+}
+
+void ClxPanelCachesEndFrame()
+{
+	++PanelFrame;
+	for (PanelCopy &c : PanelCopies) {
+		if (c.source != nullptr && PanelFrame - c.lastUse > PanelIdleFrames)
+			PanelRelease(c);
+	}
+}
+
+void ClxPanelCachesRelease()
+{
+	for (PanelCopy &c : PanelCopies)
+		PanelRelease(c);
+}
+#endif
 
 } // namespace devilution

@@ -120,7 +120,11 @@ void FreeSpellBook()
 
 void DrawSpellBook(const Surface &out)
 {
+#ifdef OPENFPGAOS
+	ClxDrawPanel(out, GetPanelPosition(UiPanels::Spell, { 0, 351 }), (*pSpellBkCel)[0], ClxPanelId::SpellBook);
+#else
 	ClxDraw(out, GetPanelPosition(UiPanels::Spell, { 0, 351 }), (*pSpellBkCel)[0]);
+#endif
 	if (gbIsHellfire && sbooktab < 5) {
 		ClxDraw(out, GetPanelPosition(UiPanels::Spell, { 61 * sbooktab + 7, 348 }), (*pSBkBtnCel)[sbooktab]);
 	} else {

@@ -331,6 +331,12 @@ void music_start(_music_id nTrack)
 		music_stop();
 		return;
 	}
+#ifdef OPENFPGAOS
+	// [of] Streamed WAV music: read it ahead asynchronously so the frame that
+	// needs the next music sector does not block on an SD/bridge read.
+	if (stream)
+		music.EnableReadAhead();
+#endif
 
 	music.SetVolume(*sgOptions.Audio.musicVolume, VOLUME_MIN, VOLUME_MAX);
 	if (!diablo_is_focused())

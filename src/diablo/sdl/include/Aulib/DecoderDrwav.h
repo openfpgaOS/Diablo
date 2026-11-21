@@ -15,6 +15,8 @@ public:
 	std::chrono::microseconds duration() const override;
 	bool seekToTime(std::chrono::microseconds pos) override;
 	int doDecoding(float buf[], int len, bool &callAgain) override;
+	bool nativeS16() const override;
+	int doDecodingS16(int16_t buf[], int len, bool &callAgain) override;
 private:
 	struct Impl;
 	std::unique_ptr<Impl> d_;

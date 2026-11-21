@@ -105,6 +105,11 @@ extern "C" void of_perf_add_logic_us(unsigned us);
 
 namespace devilution {
 
+#ifdef OPENFPGAOS
+void (*OfReleaseLevelRenderCaches)() = nullptr;
+void (*OfReleasePanelCaches)() = nullptr;
+#endif
+
 uint32_t glSeedTbl[NUMLEVELS];
 Point MousePosition;
 bool gbRunGame;
@@ -1153,8 +1158,15 @@ void CheckArchivesUpToDate()
 
 void ApplicationInit()
 {
+#ifdef OF_SHOW_FPS
+	// [of] `make build CORE=diablo SHOWFPS=1` test build: frame counter on at
+	// every boot regardless of the saved Settings value (Settings > Graphics >
+	// Show FPS can still hide it until the next boot).
+	EnableFrameCount();
+#else
 	if (*sgOptions.Graphics.showFPS)
 		EnableFrameCount();
+#endif
 
 	init_create_window();
 	was_window_init = true;
@@ -2482,6 +2494,15 @@ void FreeGameMem()
 		ResetPlayerGFX(player);
 
 	pDungeonCels = nullptr;
+#ifdef OPENFPGAOS
+	// [of] Release renderer caches built from the level graphics (the lit
+	// micro-tile cache in dun_render.cpp registers itself here) before the next
+	// level allocates, so they never add to the loading peak.
+	if (OfReleaseLevelRenderCaches != nullptr)
+		OfReleaseLevelRenderCaches();
+	if (OfReleasePanelCaches != nullptr)
+		OfReleasePanelCaches();
+#endif
 	pMegaTiles = nullptr;
 	pSpecialCels = std::nullopt;
 

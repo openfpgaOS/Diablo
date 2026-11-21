@@ -21,6 +21,7 @@
 #include <SDL.h>
 #include "of.h"
 #include "of_mixer.h"
+#include "platform/of_mpq_prefetch.h"
 
 #include <cstdint>
 #include <cstring>
@@ -248,6 +249,23 @@ int DecoderDrwav::doDecoding(float buf[], int len, bool &callAgain)
 	drwav_uint64 got = drwav_read_pcm_frames_f32(&d_->wav, (drwav_uint64)(len / ch), buf);
 	return (int)(got * ch);
 }
+/* [of] 16-bit PCM WAVs (all Diablo music and speech) decode to raw int16:
+ * drwav_read_pcm_frames_f32 reads the same frames and converts each sample
+ * as sample * 2^-15, which the stream folds into its volume scale exactly. */
+bool DecoderDrwav::nativeS16() const
+{
+	return d_->ok && d_->wav.translatedFormatTag == DR_WAVE_FORMAT_PCM
+	    && d_->wav.bitsPerSample == 16 && (d_->wav.channels == 1 || d_->wav.channels == 2);
+}
+int DecoderDrwav::doDecodingS16(int16_t buf[], int len, bool &callAgain)
+{
+	callAgain = false;
+	if (!d_->ok) return 0;
+	int ch = (int)d_->wav.channels;
+	if (ch <= 0) return 0;
+	drwav_uint64 got = drwav_read_pcm_frames_s16(&d_->wav, (drwav_uint64)(len / ch), buf);
+	return (int)(got * ch);
+}
 
 /* ====================================================================== */
 /* DecoderDrmp3                                                            */
@@ -299,6 +317,7 @@ Stream::Stream(SDL_RWops *rwops, std::unique_ptr<Decoder> decoder,
     , closeRw_(closeRw)
 {
 	channels_ = decoder_ ? decoder_->getChannels() : 2;
+	s16_ = decoder_ && decoder_->nativeS16();
 }
 Stream::~Stream()
 {
@@ -321,6 +340,7 @@ bool Stream::rewind()
 	srcPos_ = 0.0;
 	consumed_ = 0;
 	cur_[0] = cur_[1] = 0.0F;
+	curS_[0] = curS_[1] = 0;
 	return true;
 }
 bool Stream::play(int iterations)
@@ -419,10 +439,154 @@ bool Stream::decodeLoopedFrame(float out[2])
 	return false;
 }
 
+/* [of] 16-bit source refill: same frames, looping and end-of-stream semantics
+ * as decodeRawFrame()/decodeLoopedFrame(), into sbuf_. Out of line so the mix
+ * loop keeps its state in registers. */
+__attribute__((noinline)) bool Stream::refillS16()
+{
+	bool again = false;
+	const int want = (channels_ == 1) ? OF_MIX_BLOCK : OF_MIX_BLOCK * 2;
+	int got = decoder_->doDecodingS16(sbuf_, want, again);
+	ihave_ = (channels_ > 0) ? got / channels_ : 0;
+	ipos_ = 0;
+	if (ihave_ > 0) return true;
+	if (loopForever_ || playsLeft_ > 1) {
+		if (!loopForever_)
+			--playsLeft_;
+		decoder_->rewind();
+		got = decoder_->doDecodingS16(sbuf_, want, again);
+		ihave_ = (channels_ > 0) ? got / channels_ : 0;
+		ipos_ = 0;
+		if (ihave_ > 0) return true;
+	}
+	playing_ = false;
+	return false;
+}
+
+static inline int16_t ClampS16(int32_t x)
+{
+	return static_cast<int16_t>(x > 32767 ? 32767 : (x < -32768 ? -32768 : x));
+}
+
+/* [of] Nearest-neighbor mix of a 16-bit source. Same resampling state
+ * machine as the float path (float srcPos_/consumed_, identical folding and
+ * accumulation), so the same source frame is held for every output frame;
+ * only the last frame consumed for an output frame matters, so runs of
+ * source frames are skipped by count. The float path computes
+ * (int32)((s * 2^-15) * scale); s * 2^-15 is exact in float, so
+ * (int32)((float)s * (scale * 2^-15)) is the same product, rounded once --
+ * bit-identical output. The product (and in Direct mode the clamped,
+ * packed int16 pair) is formed once per new source frame (0.46 per output
+ * frame at 22050 Hz). Direct mode (one active stream) stores the pair that
+ * accumulate-from-zero + clamp yields straight into the output block. */
+template <bool Direct>
+bool Stream::mixS16(int32_t *accum, int16_t *out, int frames)
+{
+	const int rate = decoder_->getRate();
+	if (rate <= 0) {
+		playing_ = false;
+		if (Direct) std::memset(out, 0, sizeof(int16_t) * 2 * frames);
+		return false;
+	}
+	const float step = (float)rate / (float)OF_OUT_RATE;
+	const float lk = volume_ * leftGain_ * 32767.0F * (1.0F / 32768.0F);
+	const float rk = volume_ * rightGain_ * 32767.0F * (1.0F / 32768.0F);
+	if (srcPos_ >= 1.0F) {
+		long whole = (long)srcPos_;
+		if (whole > consumed_) whole = consumed_;
+		srcPos_ -= (float)whole;
+		consumed_ -= whole;
+	}
+	const bool muted = muted_;
+	const int ch = channels_;
+	float pos = srcPos_;
+	long consumed = consumed_;
+	int ip = ipos_;
+	int ih = ihave_;
+	int32_t heldL = (int32_t)((float)curS_[0] * lk);
+	int32_t heldR = (int32_t)((float)curS_[1] * rk);
+	uint32_t pair = muted ? 0u : ((uint32_t)(uint16_t)ClampS16(heldL) | ((uint32_t)(uint16_t)ClampS16(heldR) << 16));
+	uint32_t *out32 = reinterpret_cast<uint32_t *>(out);
+	/* One output frame: hold or advance to `target`, then emit. Returns false
+	 * at end of stream (frame `i` and the rest of the block stay silent). */
+	auto frame = [&](int i, long target, float framePos) -> bool {
+		if (consumed <= target) {
+			long adv = target - consumed + 1;
+			for (;;) {
+				if (ip >= ih) {
+					ipos_ = ip;
+					if (!refillS16()) {
+						srcPos_ = framePos;
+						consumed_ = consumed;
+						if (Direct) std::memset(out + i * 2, 0, sizeof(int16_t) * 2 * (frames - i));
+						return false;
+					}
+					ip = ipos_;
+					ih = ihave_;
+				}
+				const long avail = ih - ip;
+				const long take = adv < avail ? adv : avail;
+				ip += (int)take;
+				consumed += take;
+				adv -= take;
+				if (adv == 0) break;
+			}
+			const int16_t *p = sbuf_ + (ip - 1) * ch;
+			curS_[0] = p[0];
+			curS_[1] = p[ch - 1];
+			heldL = (int32_t)((float)p[0] * lk);
+			heldR = (int32_t)((float)p[ch - 1] * rk);
+			if (Direct)
+				pair = muted ? 0u : ((uint32_t)(uint16_t)ClampS16(heldL) | ((uint32_t)(uint16_t)ClampS16(heldR) << 16));
+		}
+		if (Direct) {
+			out32[i] = pair;
+		} else if (!muted) {
+			accum[i * 2] += heldL;
+			accum[i * 2 + 1] += heldR;
+		}
+		return true;
+	};
+	/* Source positions first: the same float additions in the same order as
+	 * before, in a loop whose only dependency chain is the add itself, so
+	 * the truncations overlap with it; the per-frame loop below is then
+	 * integer only (no branch waits on an FPU result). */
+	static long targets[OF_MIX_BLOCK];
+	for (int done = 0; done < frames; done += OF_MIX_BLOCK) {
+		const int n = frames - done < OF_MIX_BLOCK ? frames - done : OF_MIX_BLOCK;
+		for (int k = 0; k < n; ++k) {
+			targets[k] = (long)pos;
+			pos += step;
+		}
+		for (int k = 0; k < n; ++k) {
+			if (!frame(done + k, targets[k], pos))
+				return false;
+		}
+	}
+	srcPos_ = pos;
+	consumed_ = consumed;
+	ipos_ = ip;
+	return true;
+}
+
+bool Stream::renderS16(int16_t *out, int frames)
+{
+	if (!playing_) {
+		std::memset(out, 0, sizeof(int16_t) * 2 * frames);
+		return false;
+	}
+	if (paused_) {
+		std::memset(out, 0, sizeof(int16_t) * 2 * frames);
+		return true;
+	}
+	return mixS16<true>(nullptr, out, frames);
+}
+
 bool Stream::mixInto(int32_t *accum, int frames)
 {
 	if (!playing_) return false;
 	if (paused_) return true;
+	if (s16_) return mixS16<false>(accum, nullptr, frames);
 	const int rate = decoder_->getRate();
 	if (rate <= 0) { playing_ = false; return false; }
 	/* float, not double: see Stream.h srcPos_ comment -- rv32imafc lacks
@@ -625,6 +789,9 @@ extern "C" void of_aulib_pump(void)
 #ifdef OF_PERF_TRACE
 	const AudioPumpTimer timer;
 #endif
+	/* [of] Advance the music read-ahead (retire / copy / issue one async
+	 * chunk) before decoding, so the decoder finds its next sectors ready. */
+	of_mpq_prefetch_pump();
 	audio_lock();
 	if (g_output_suspended) {
 		silence_voice_locked();
@@ -643,7 +810,7 @@ extern "C" void of_aulib_pump(void)
 		ensure_voice_open();
 	}
 	static int32_t acc[OF_MIX_BLOCK * 2];
-	static int16_t out[OF_MIX_BLOCK * 2];
+	alignas(4) static int16_t out[OF_MIX_BLOCK * 2]; /* [of] 4-aligned: mixS16 stores packed pairs */
 
 	int freePairs = of_audio_free();
 	if (g_ring_capacity > 0) {
@@ -675,9 +842,25 @@ extern "C" void of_aulib_pump(void)
 	}
 	while (freePairs > 0) {
 		int n = freePairs < OF_MIX_BLOCK ? freePairs : OF_MIX_BLOCK;
+		auto &v = ActiveStreams();
+		/* [of] One active 16-bit stream (music, or one speech line): render
+		 * the output block directly -- the same int16 pairs the accumulate +
+		 * clamp path below produces for a single stream, without the int32
+		 * accumulator pass. */
+		if (v.size() == 1 && v[0]->s16()) {
+			Aulib::Stream *s = v[0];
+			if (!s->renderS16(out, n)) {
+				v.erase(v.begin());
+				s->runFinishCallback(); /* same lock rules as below */
+			}
+			int wrote = of_audio_write(out, n);
+			if (wrote <= 0)
+				break;
+			freePairs -= wrote;
+			continue;
+		}
 		std::memset(acc, 0, sizeof(int32_t) * n * 2);
 
-		auto &v = ActiveStreams();
 		for (size_t i = 0; i < v.size();) {
 			Aulib::Stream *s = v[i];
 			if (!s->mixInto(acc, n)) {

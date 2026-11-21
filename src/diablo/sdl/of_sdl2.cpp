@@ -670,6 +670,62 @@ extern "C" void of_perf_add_audio_us(unsigned us) {
 }
 #endif
 
+/* [of] Frame pacing on scanout vblanks (30 fps cap).
+ *
+ * of_video_flip() is a non-blocking mailbox flip: the newest queued buffer is
+ * shown at the next vsync (or at once if the request lands in the vertical
+ * blanking lines), and an older queued one is dropped. Without a limiter
+ * (DevilutionX's VerticalSync mode does not limit on this backend) frames
+ * that take 20-45 ms are shown for 1, 2 or 3 vblanks in an irregular
+ * pattern. Here a frame is queued only once the next vsync is at least
+ * OF_PACE_VBLANKS after the vsync that showed the previous frame, and never
+ * inside the first OF_PACE_BLANK_US after a vsync, so it is always shown at
+ * the next vsync: every frame that finishes in time is shown for exactly two
+ * 60 Hz vblanks. A late frame is queued at the first safe moment (at most
+ * OF_PACE_BLANK_US extra). The wait keeps the audio ring fed and gives up
+ * after OF_PACE_TIMEOUT_US, so a frozen vblank counter (Pocket system menu, a
+ * kernel without the timing service, which reports 0) can never stall the
+ * game; pacing pauses while the counter does not advance and resumes when it
+ * does. */
+#define OF_PACE_VBLANKS     2u
+#define OF_PACE_BLANK_US    1000u
+#define OF_PACE_TIMEOUT_US  40000u
+static uint32_t g_pace_last_shown_vb;
+static bool g_pace_have_last;
+static bool g_pace_disabled;
+static uint32_t g_pace_frozen_vb;
+/* noinline: keeps the wait visible as its own function in cycle profiles. */
+__attribute__((noinline)) static void pace_before_flip(void) {
+	of_video_timing_t t;
+	of_video_get_timing(&t);
+	if (g_pace_disabled) {
+		if (t.vblank_count == g_pace_frozen_vb) return; /* still frozen / no timing service */
+		g_pace_disabled = false;                         /* counter runs again: resume pacing */
+		g_pace_have_last = false;
+	}
+	const uint32_t start = of_time_us();
+	const uint32_t start_vb = t.vblank_count;
+	for (;;) {
+		const uint32_t now = of_time_us();
+		const bool in_blank = static_cast<uint32_t>(now - static_cast<uint32_t>(t.last_vblank_us)) < OF_PACE_BLANK_US;
+		const bool due = !g_pace_have_last
+		    || static_cast<int32_t>(t.vblank_count + 1u - (g_pace_last_shown_vb + OF_PACE_VBLANKS)) >= 0;
+		if (due && !in_blank)
+			break;
+		if (now - start > OF_PACE_TIMEOUT_US) {
+			if (t.vblank_count == start_vb) { /* counter not running: stop waiting until it moves */
+				g_pace_disabled = true;
+				g_pace_frozen_vb = t.vblank_count;
+			}
+			break;
+		}
+		of_aulib_pump();
+		of_video_get_timing(&t);
+	}
+	g_pace_last_shown_vb = t.vblank_count + 1u; /* queued outside blanking: shown at the next vsync */
+	g_pace_have_last = true;
+}
+
 /* Push the rendered frame to the hardware. When g_screen aliases the
  * of_video back buffer (matching dims, the common Pocket case), this
  * skips a 300 KB memcpy: DevilutionX's BltFast already wrote straight
@@ -736,6 +792,7 @@ static void present_screen(void) {
 		}
 	}
 #ifndef OF_PERF_TRACE
+	pace_before_flip();
 	of_video_flip();
 #else
 	{
@@ -743,6 +800,7 @@ static void present_screen(void) {
 		static unsigned perf_window_start_ms;
 		static bool perf_window_started;
 		const unsigned t0 = of_time_us();
+		pace_before_flip();
 		of_video_flip();
 		perf_flip_us += of_time_us() - t0;
 		perf_frames++;

@@ -13,6 +13,9 @@
 #include "diablo.h"
 #include "engine/load_file.hpp"
 #include "engine/points_in_rectangle_range.hpp"
+#ifdef OPENFPGAOS
+#include "engine/render/dun_render.hpp"
+#endif
 #include "player.h"
 
 #if defined(OPENFPGAOS) && defined(OF_DIABLO_GPU)
@@ -252,12 +255,25 @@ void DoLighting(Point position, uint8_t radius, DisplacementOf<int8_t> offset)
 		SetLight(position, 0);
 	}
 
+#ifdef OPENFPGAOS
+	// [of] Beyond (radius + 1) * 8 the falloff is the fully dark 15 (see
+	// MakeLightTable), which never lowers a light value (all are <= 15), and
+	// for x >= 1 the cone distance only grows with x along a row
+	// (sqrt((8x - oy)^2 + (8y - ox)^2) with 8x - oy > 0). So the rest of a row
+	// past the first cell at or beyond that limit (or 128) changes nothing:
+	// stop the row there instead of visiting all 15 cells.
+	const int rowLimit = (radius + 1) * 8 + 1 < 128 ? (radius + 1) * 8 + 1 : 128;
+#endif
 	for (int i = 0; i < 4; i++) {
 		int yBound = i > 0 && i < 3 ? maxY : minY;
 		int xBound = i < 2 ? maxX : minX;
 		for (int y = 0; y < yBound; y++) {
 			for (int x = 1; x < xBound; x++) {
 				int linearDistance = LightConeInterpolations[offset.deltaX][offset.deltaY][x + block.deltaX][y + block.deltaY];
+#ifdef OPENFPGAOS
+				if (linearDistance >= rowLimit)
+					break;
+#endif
 				if (linearDistance >= 128)
 					continue;
 				Point temp = position + (Displacement { x, y }).Rotate(-i);
@@ -412,6 +428,10 @@ void MakeLightTable()
 		}
 	}
 
+#ifdef OPENFPGAOS
+	// [of] Light tables were rebuilt: cached lit micro-tiles are stale.
+	LitTileCacheReset(/*releaseMemory=*/false);
+#endif
 #if defined(OPENFPGAOS) && defined(OF_DIABLO_GPU)
 	// [of] Mirror the freshly built light tables into GPU palookup slot 0 so
 	// GPU spans can shade with the same tables the CPU renderer uses.
@@ -677,6 +697,9 @@ void ProcessVisionList()
 
 void lighting_color_cycling()
 {
+#ifdef OPENFPGAOS
+	LitTileCacheNoteColorCycling();
+#endif
 	for (auto &lightTable : LightTables) {
 		// shift elements between indexes 1-31 to left
 		std::rotate(lightTable.begin() + 1, lightTable.begin() + 2, lightTable.begin() + 32);

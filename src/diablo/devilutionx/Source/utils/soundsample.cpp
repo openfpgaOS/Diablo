@@ -15,6 +15,9 @@
 #endif
 
 #include "engine/assets.hpp"
+#ifdef OPENFPGAOS
+#include "mpq/mpq_sdl_rwops.hpp"
+#endif
 #include "options.h"
 #include "utils/aulib.hpp"
 #include "utils/log.hpp"
@@ -294,6 +297,14 @@ void SoundSample::Unmute()
 #endif
 	if (stream_) stream_->unmute();
 }
+
+#ifdef OPENFPGAOS
+void SoundSample::EnableReadAhead()
+{
+	if (stream_)
+		SDL_RWops_MpqStartReadAhead(stream_->rwops());
+}
+#endif
 
 int SoundSample::SetChunkStream(std::string filePath, bool isMp3, bool logErrors)
 {

@@ -58,7 +58,8 @@ def main():
         failed = False
         for name, linked, extra in [("sdl", objects[:1], []), ("level_memory", objects[:7], []),
                                     ("timing", objects[:1], ["-Wl,--wrap=usleep"]),
-                                    ("gamma", [], ["-fno-builtin-powf", "-Wl,--wrap=powf"])]:
+                                    ("gamma", [], ["-fno-builtin-powf", "-Wl,--wrap=powf"]),
+                                    ("audio", [objects[0], objects[9]], [])]:
             binary = str(Path(tmp) / name)
             test = ROOT / f"src/diablo/tests/{name}_test.cpp"
             subprocess.run(compiler + flags + extra + [str(test)] + linked

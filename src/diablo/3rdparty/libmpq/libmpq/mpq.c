@@ -36,6 +36,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* openfpgaOS: music read-ahead (serves block reads of the streamed music
+ * member from an async-filled ring; see platform/of_mpq_prefetch.h). */
+#include "platform/of_mpq_prefetch.h"
+
 /* support for platform specific things */
 #include "platform.h"
 
@@ -536,6 +540,9 @@ error:
 
 /* this function close the file descriptor, free the decryption buffer and the file list. */
 int32_t libmpq__archive_close(mpq_archive_s *mpq_archive) {
+
+	/* openfpgaOS: detach the music read-ahead from this handle first. */
+	of_mpq_prefetch_forget(mpq_archive->fp);
 
 	/* try to close the file */
 	if ((fclose(mpq_archive->fp)) < 0) {
@@ -1405,13 +1412,6 @@ int32_t libmpq__block_read(mpq_archive_s *mpq_archive, uint32_t file_number, uin
 	/* check if we can avoid allocating a temporary buffer. */
 	const uint8_t use_in_buf_as_out = in_size <= out_size && (!compressed || in_size == out_size) && !imploded;
 
-	/* seek in file. */
-	if (fseeko(mpq_archive->fp, block_offset + mpq_archive->archive_offset, SEEK_SET) < 0) {
-
-		/* something with seek in file failed. */
-		return LIBMPQ_ERROR_SEEK;
-	}
-
 	if (use_in_buf_as_out) {
 		in_buf = out_buf;
 	} else {
@@ -1423,6 +1423,19 @@ int32_t libmpq__block_read(mpq_archive_s *mpq_archive, uint32_t file_number, uin
 		}
 	}
 
+	/* openfpgaOS: read-ahead ring first; otherwise seek + read as before. */
+	if (!of_mpq_prefetch_read(mpq_archive->fp, (uint64_t)(block_offset + mpq_archive->archive_offset), in_buf, (uint32_t)in_size)) {
+
+	/* seek in file. */
+	if (fseeko(mpq_archive->fp, block_offset + mpq_archive->archive_offset, SEEK_SET) < 0) {
+
+		/* free buffers. */
+		if (!use_in_buf_as_out) free(in_buf);
+
+		/* something with seek in file failed. */
+		return LIBMPQ_ERROR_SEEK;
+	}
+
 	/* read block from file. */
 	if (fread(in_buf, 1, in_size, mpq_archive->fp) != in_size) {
 
@@ -1431,6 +1444,7 @@ int32_t libmpq__block_read(mpq_archive_s *mpq_archive, uint32_t file_number, uin
 
 		/* something on reading block failed. */
 		return LIBMPQ_ERROR_READ;
+	}
 	}
 
 	/* get encryption status. */
@@ -1578,6 +1592,9 @@ int32_t libmpq__block_read_with_temporary_buffer(mpq_archive_s *mpq_archive, uin
 	/* check if we can avoid allocating a temporary buffer. */
 	const uint8_t use_in_buf_as_out = in_size <= out_size && (!compressed || in_size == out_size) && !imploded;
 
+	/* openfpgaOS: read-ahead ring first; otherwise seek + read as before. */
+	if (!of_mpq_prefetch_read(mpq_archive->fp, (uint64_t)(block_offset + mpq_archive->archive_offset), tmp_buf, (uint32_t)in_size)) {
+
 	/* seek in file. */
 	if (fseeko(mpq_archive->fp, block_offset + mpq_archive->archive_offset, SEEK_SET) < 0) {
 
@@ -1590,6 +1607,7 @@ int32_t libmpq__block_read_with_temporary_buffer(mpq_archive_s *mpq_archive, uin
 
 		/* something on reading block failed. */
 		return LIBMPQ_ERROR_READ;
+	}
 	}
 
 	/* get encryption status. */
@@ -1675,5 +1693,21 @@ int32_t libmpq__block_read_with_temporary_buffer(mpq_archive_s *mpq_archive, uin
 	}
 
 	/* if no error was found, return zero. */
+	return LIBMPQ_SUCCESS;
+}
+
+/* openfpgaOS: the archive handle and the absolute byte range [start, start +
+ * size) holding a member's stored (packed) data, for the music read-ahead. */
+int32_t libmpq__file_raw_range(mpq_archive_s *mpq_archive, uint32_t file_number, FILE **fp, uint64_t *start, uint64_t *size) {
+
+	/* check if given file number is not out of range. */
+	CHECK_FILE_NUM(file_number, mpq_archive)
+
+	const uint32_t bi = mpq_archive->mpq_map[file_number].block_table_indices;
+	*fp = mpq_archive->fp;
+	*start = (uint64_t)mpq_archive->mpq_block[bi].offset
+	    + ((uint64_t)mpq_archive->mpq_block_ex[bi].offset_high << 32)
+	    + (uint64_t)mpq_archive->archive_offset;
+	*size = mpq_archive->mpq_block[bi].packed_size;
 	return LIBMPQ_SUCCESS;
 }

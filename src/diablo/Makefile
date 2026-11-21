@@ -75,6 +75,15 @@ ifeq ($(PERF),1)
   DEFS += -DOF_PERF_TRACE
 endif
 
+# `make SHOWFPS=1` (root: `make build CORE=diablo SHOWFPS=1`): test build with
+# the on-screen frame counter forced on at boot -- displayed frames per second
+# and the worst frame time of the last second, top left of the game view (see
+# DrawFPS in scrollrt.cpp). Any build can also show it via the main menu:
+# Settings > Graphics > Show FPS (saved in diablo.ini). Default OFF.
+ifeq ($(SHOWFPS),1)
+  DEFS += -DOF_SHOW_FPS
+endif
+
 # ── GPU bring-up (EXPERIMENTAL, default OFF) ──────────────────────────
 # GPU=1 links platform/of_gpu_bridge.c (the one TU allowed to include
 # of_gpu.h) and defines OF_DIABLO_GPU: boot-time GPU feature report +
@@ -101,8 +110,15 @@ COMMON := $(ARCH) $(BASE_OPT) -fno-math-errno -fno-trapping-math \
 CXXFLAGS := -std=gnu++20 -fno-exceptions -fno-rtti -fno-threadsafe-statics $(COMMON)
 CFLAGS   := -std=gnu11 -DVERSION='"0.4.2"' $(COMMON)
 
+# Music read-ahead (platform/of_mpq_prefetch.c): while its async data-slot read
+# is in flight the kernel refuses blocking slot reads and the CPU must not
+# touch CRAM0, so every musl FILE operation (the four __stdio_* vtable
+# functions) and every path call the game makes directly first waits for it
+# (of_bridge_drain). Verify with: nm app.elf | grep __wrap_
+BRIDGE_WRAP := $(foreach f,__stdio_read __stdio_write __stdio_seek __stdio_close \
+               fopen access stat remove rename truncate mkdir,-Wl,--wrap=$(f))
 LDFLAGS := $(ARCH) -nostdlib -static -T $(SDK)/app.ld -L$(MUSL)/lib \
-           -Wl,--gc-sections -Wl,--no-warn-rwx-segments
+           -Wl,--gc-sections -Wl,--no-warn-rwx-segments $(BRIDGE_WRAP)
 LIBS := -Wl,--start-group -lc -lm $(LIBSTDCXX) $(LIBSUPCXX) $(LIBGCC) -Wl,--end-group
 CRT  := $(MUSL)/lib/crt1.o $(MUSL)/lib/crti.o $(MUSL)/lib/crtn.o
 
@@ -136,7 +152,7 @@ PKW_SRCS  := $(DX)/3rdParty/PKWare/explode.cpp $(DX)/3rdParty/PKWare/implode.cpp
 LOC_CXX   := $(CURDIR)/sdl/of_sdl2.cpp $(CURDIR)/sdl/of_aulib.cpp $(CURDIR)/platform/devx_stubs.cpp \
              $(CURDIR)/platform/of_oom.cpp
 LOC_C     := $(CURDIR)/platform/of_libc_compat.c $(CURDIR)/platform/zlib_bzip2_stub.c \
-             $(CURDIR)/platform/of_platform.c $(SDK)/of_init.c
+             $(CURDIR)/platform/of_platform.c $(CURDIR)/platform/of_mpq_prefetch.c $(SDK)/of_init.c
 ifeq ($(GPU),1)
   LOC_C   += $(CURDIR)/platform/of_gpu_bridge.c
 endif

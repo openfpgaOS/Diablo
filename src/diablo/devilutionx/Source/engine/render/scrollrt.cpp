@@ -47,6 +47,10 @@
 #include "utils/log.hpp"
 #include "utils/str_cat.hpp"
 
+#if defined(OPENFPGAOS) && !defined(OF_PC)
+#include "of.h"
+#endif
+
 #ifndef USE_SDL1
 #include "controls/touch/renderers.h"
 #endif
@@ -1294,6 +1298,71 @@ void DrawView(const Surface &out, Point startPosition)
 /**
  * @brief Display the current average FPS over 1 sec
  */
+#if defined(OPENFPGAOS) && !defined(OF_PC)
+/* [of] On openfpgaOS the counter reports DISPLAYED frames, read from the
+ * kernel's frame timing (of_video_get_timing): present_count counts buffers the
+ * scanout actually latched, and last_flip_presented_us is when the latest one
+ * was. Shown as "<displayed fps> FPS <worst ms>": fps over the last ~1 s, and
+ * the longest time one frame stayed on screen in that second. With the
+ * 2-vblank pacing a steady run reads "30.0 FPS 33ms"; a frame that missed its
+ * slot shows up as 50ms (or more), even when the average still rounds to 29+.
+ * Without the kernel timing service (present_count stays 0) it falls back to
+ * counting rendered frames, as upstream does. Cost when enabled: one timing
+ * read per frame plus drawing the string; nothing when Show FPS is off. */
+void DrawFPS(const Surface &out)
+{
+	static int framesSinceLastUpdate = 0;
+	static string_view formatted {};
+	static bool haveLast = false;
+	static uint32_t windowCount = 0;
+	static uint32_t lastCount = 0;
+	static uint64_t lastPresentUs = 0;
+	static uint32_t worstUs = 0;
+
+	if (!frameflag || !gbActive) {
+		return;
+	}
+
+	of_video_timing_t timing;
+	of_video_get_timing(&timing);
+	const bool kernelTiming = timing.present_count != 0;
+	if (kernelTiming) {
+		if (!haveLast) {
+			haveLast = true;
+			windowCount = lastCount = timing.present_count;
+			lastPresentUs = timing.last_flip_presented_us;
+		} else if (timing.present_count != lastCount) {
+			const uint32_t presents = timing.present_count - lastCount;
+			const uint32_t perFrameUs = static_cast<uint32_t>((timing.last_flip_presented_us - lastPresentUs) / presents);
+			if (perFrameUs > worstUs)
+				worstUs = perFrameUs;
+			lastCount = timing.present_count;
+			lastPresentUs = timing.last_flip_presented_us;
+		}
+	}
+	framesSinceLastUpdate++;
+	uint32_t runtimeInMs = SDL_GetTicks();
+	uint32_t msSinceLastUpdate = runtimeInMs - lastFpsUpdateInMs;
+	if (msSinceLastUpdate >= 1000) {
+		lastFpsUpdateInMs = runtimeInMs;
+		constexpr int FpsPow10 = 10;
+		const uint32_t frames = kernelTiming ? timing.present_count - windowCount : static_cast<uint32_t>(framesSinceLastUpdate);
+		const int fps = static_cast<int>(1000 * FpsPow10 * frames / msSinceLastUpdate);
+		framesSinceLastUpdate = 0;
+		windowCount = timing.present_count;
+
+		static char buf[32] {};
+		char *end = fps >= 100 * FpsPow10
+		    ? BufCopy(buf, fps / FpsPow10, " FPS")
+		    : BufCopy(buf, fps / FpsPow10, ".", fps % FpsPow10, " FPS");
+		if (kernelTiming && worstUs != 0)
+			end = BufCopy(end, " ", static_cast<int>((worstUs + 500) / 1000), "ms");
+		worstUs = 0;
+		formatted = { buf, static_cast<string_view::size_type>(end - buf) };
+	};
+	DrawString(out, formatted, Point { 8, 68 }, { UiFlags::ColorRed });
+}
+#else
 void DrawFPS(const Surface &out)
 {
 	static int framesSinceLastUpdate = 0;
@@ -1320,6 +1389,8 @@ void DrawFPS(const Surface &out)
 	};
 	DrawString(out, formatted, Point { 8, 68 }, { UiFlags::ColorRed });
 }
+
+#endif
 
 /**
  * @brief Update part of the screen from the back buffer
@@ -1662,6 +1733,9 @@ void DrawAndBlit()
 	if (!gbRunGame || HeadlessMode) {
 		return;
 	}
+#ifdef OPENFPGAOS
+	ClxPanelCachesEndFrame();
+#endif
 #if defined(OPENFPGAOS) && defined(OF_PERF_TRACE)
 	// Stopped just before RenderPresent below, so the reported draw time
 	// excludes the flip/present (telemetered separately by the shim).

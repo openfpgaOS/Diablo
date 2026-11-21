@@ -56,6 +56,12 @@ public:
 	}
 
 #ifdef OPENFPGAOS
+	/* [of] Read this streamed sample's MPQ data ahead asynchronously
+	 * (music only: one read-ahead exists; see platform/of_mpq_prefetch.h). */
+	void EnableReadAhead();
+#endif
+
+#ifdef OPENFPGAOS
 	/* True when this sample plays only on a HW mixer voice: no Aulib
 	 * stream exists, so no finish callback was installed (see above)
 	 * and cleanup must come from ReapDuplicateSounds() polling. */

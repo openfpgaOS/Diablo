@@ -176,8 +176,8 @@ graphics settings; average FPS alone can hide stalls. Rebuild with `PERF=0`
 to remove the instrumentation. Changing build flags automatically rebuilds
 the affected build configuration.
 
-Release preparation and the changes in 1.1.2 are documented in
-[the release notes](docs/releases/diablo-v1.1.2.md); earlier notes are in
+Release preparation and the changes in 1.1.3 are documented in
+[the release notes](docs/releases/diablo-v1.1.3.md); earlier notes are in
 [docs/releases](docs/releases/).
 
 ## Credits

@@ -297,7 +297,18 @@ void FindMeleeTarget()
 		int x, y;
 		int steps;
 	};
+#ifdef OPENFPGAOS
+	// [of] Breadth-first search FIFO in a static array instead of std::list.
+	// The gamepad runs this search on every frame, and the list allocated and
+	// freed one node per reachable tile (hundreds per call). Every tile is
+	// queued at most once (it is marked visited when queued), so MAXDUNX *
+	// MAXDUNY entries always suffice, and push/pop order is unchanged.
+	static SearchNode queue[MAXDUNX * MAXDUNY];
+	size_t queueHead = 0;
+	size_t queueTail = 0;
+#else
 	std::list<SearchNode> queue;
+#endif
 
 	Player &myPlayer = *MyPlayer;
 
@@ -305,12 +316,21 @@ void FindMeleeTarget()
 		const int startX = myPlayer.position.future.x;
 		const int startY = myPlayer.position.future.y;
 		visited[startX][startY] = true;
+#ifdef OPENFPGAOS
+		queue[queueTail++] = { startX, startY, 0 };
+#else
 		queue.push_back({ startX, startY, 0 });
+#endif
 	}
 
+#ifdef OPENFPGAOS
+	while (queueHead != queueTail) {
+		SearchNode node = queue[queueHead++];
+#else
 	while (!queue.empty()) {
 		SearchNode node = queue.front();
 		queue.pop_front();
+#endif
 
 		for (auto pathDir : PathDirs) {
 			const int dx = node.x + pathDir.deltaX;
@@ -349,7 +369,11 @@ void FindMeleeTarget()
 			}
 
 			if (path_solid_pieces({ node.x, node.y }, { dx, dy })) {
+#ifdef OPENFPGAOS
+				queue[queueTail++] = { dx, dy, node.steps + 1 };
+#else
 				queue.push_back({ dx, dy, node.steps + 1 });
+#endif
 				visited[dx][dy] = true;
 			}
 		}

@@ -6,6 +6,7 @@
  * doDecoding() yields interleaved float samples in [-1, 1].
  */
 #include <chrono>
+#include <cstdint>
 #include <SDL_rwops.h>
 
 namespace Aulib {
@@ -23,6 +24,20 @@ public:
 
 	// Writes up to `len` interleaved float samples; returns count written.
 	virtual int doDecoding(float buf[], int len, bool &callAgain) = 0;
+
+	// [of] Optional native 16-bit path. A decoder whose source is 16-bit
+	// PCM returns true from nativeS16() and yields the raw samples from
+	// doDecodingS16() (same frames, same order as doDecoding(); the float
+	// path's value is exactly sample * 2^-15). The stream then mixes in
+	// integer/one-multiply form instead of converting every sample.
+	virtual bool nativeS16() const { return false; }
+	virtual int doDecodingS16(int16_t buf[], int len, bool &callAgain)
+	{
+		(void)buf;
+		(void)len;
+		callAgain = false;
+		return 0;
+	}
 };
 
 } // namespace Aulib

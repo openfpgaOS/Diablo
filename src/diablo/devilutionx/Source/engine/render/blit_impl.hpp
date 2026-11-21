@@ -30,11 +30,60 @@ DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void BlitFillDirect(uint8_t *dst, unsigned l
 	std::memset(dst, color, length);
 }
 
+#ifdef OPENFPGAOS
+/* [of] Inline row copy for the short runs the tile and sprite renderers copy
+ * (FullyLit tile rows are at most 32 pixels).  A call into musl's memcpy
+ * copies runs below 32 bytes with a relative src/dst misalignment one byte at
+ * a time (lbu + sb per pixel); here the destination is word-aligned first and
+ * each output word is either one aligned load or, for a misaligned source,
+ * funnel-shifted from two consecutive aligned source words.  Every source
+ * word loaded contains at least one byte of the run, so nothing past the
+ * run's last aligned word is touched.  Unaligned word accesses trap on
+ * VexiiRiscv, so all word accesses here are aligned.  Little-endian. */
+typedef uint32_t __attribute__((may_alias)) OfWord;
+
+DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void BlitPixelsDirect(uint8_t *DVL_RESTRICT dst, const uint8_t *DVL_RESTRICT src, unsigned length)
+{
+	DVL_ASSUME(length != 0);
+	if (length > 128) {
+		std::memcpy(dst, src, length);
+		return;
+	}
+	while ((reinterpret_cast<uintptr_t>(dst) & 3u) != 0) {
+		*dst++ = *src++;
+		if (--length == 0) return;
+	}
+	OfWord *DVL_RESTRICT d32 = reinterpret_cast<OfWord *>(dst);
+	const unsigned off = reinterpret_cast<uintptr_t>(src) & 3u;
+	if (length >= 4) {
+		if (off == 0) {
+			const OfWord *s32 = reinterpret_cast<const OfWord *>(src);
+			for (; length >= 4; length -= 4)
+				*d32++ = *s32++;
+			src = reinterpret_cast<const uint8_t *>(s32);
+		} else {
+			const OfWord *s32 = reinterpret_cast<const OfWord *>(src - off);
+			const unsigned shr = off * 8;
+			const unsigned shl = 32 - shr;
+			uint32_t cur = *s32++;
+			for (; length >= 4; length -= 4, src += 4) {
+				const uint32_t next = *s32++;
+				*d32++ = (cur >> shr) | (next << shl);
+				cur = next;
+			}
+		}
+	}
+	dst = reinterpret_cast<uint8_t *>(d32);
+	for (; length != 0; --length)
+		*dst++ = *src++;
+}
+#else
 DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void BlitPixelsDirect(uint8_t *DVL_RESTRICT dst, const uint8_t *DVL_RESTRICT src, unsigned length)
 {
 	DVL_ASSUME(length != 0);
 	std::memcpy(dst, src, length);
 }
+#endif
 
 struct BlitDirect {
 	DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void operator()(unsigned length, uint8_t *DVL_RESTRICT dst, const uint8_t *DVL_RESTRICT src) const
@@ -142,13 +191,29 @@ DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void BlitPixelsBlended(uint8_t *DVL_RESTRICT
 		if (--length == 0) return;
 	}
 	uint32_t *DVL_RESTRICT dst32 = reinterpret_cast<uint32_t *>(dst);
-	for (; length >= 4; length -= 4, src += 4, ++dst32) {
-		const uint32_t d = *dst32;
-		uint32_t w = paletteTransparencyLookup[src[0]][d & 0xFFu];
-		w |= static_cast<uint32_t>(paletteTransparencyLookup[src[1]][(d >> 8) & 0xFFu]) << 8;
-		w |= static_cast<uint32_t>(paletteTransparencyLookup[src[2]][(d >> 16) & 0xFFu]) << 16;
-		w |= static_cast<uint32_t>(paletteTransparencyLookup[src[3]][d >> 24]) << 24;
-		*dst32 = w;
+	/* [of] Source pixels as one (funnel-shifted) aligned word per 4 pixels
+	 * instead of four byte loads; same lookups and stores as before. */
+	const unsigned off = reinterpret_cast<uintptr_t>(src) & 3u;
+	if (length >= 4) {
+		const OfWord *s32 = reinterpret_cast<const OfWord *>(src - off);
+		const unsigned shr = off * 8;
+		uint32_t cur = off != 0 ? *s32++ : 0;
+		for (; length >= 4; length -= 4, src += 4, ++dst32) {
+			uint32_t s4;
+			if (off == 0) {
+				s4 = *s32++;
+			} else {
+				const uint32_t next = *s32++;
+				s4 = (cur >> shr) | (next << (32 - shr));
+				cur = next;
+			}
+			const uint32_t d = *dst32;
+			uint32_t w = paletteTransparencyLookup[s4 & 0xFFu][d & 0xFFu];
+			w |= static_cast<uint32_t>(paletteTransparencyLookup[(s4 >> 8) & 0xFFu][(d >> 8) & 0xFFu]) << 8;
+			w |= static_cast<uint32_t>(paletteTransparencyLookup[(s4 >> 16) & 0xFFu][(d >> 16) & 0xFFu]) << 16;
+			w |= static_cast<uint32_t>(paletteTransparencyLookup[s4 >> 24][d >> 24]) << 24;
+			*dst32 = w;
+		}
 	}
 	dst = reinterpret_cast<uint8_t *>(dst32);
 	for (; length != 0; --length) {

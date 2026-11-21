@@ -275,4 +275,13 @@ void RenderTile(const Surface &out, Point position,
  */
 void world_draw_black_tile(const Surface &out, int sx, int sy);
 
+#ifdef OPENFPGAOS
+/** [of] Level-teardown hook (defined in diablo.cpp, called from FreeGameMem); set by caches that hold level data. */
+extern void (*OfReleaseLevelRenderCaches)();
+/** [of] Flush the lit micro-tile cache (light tables or level tiles changed); optionally free its memory. */
+void LitTileCacheReset(bool releaseMemory);
+/** [of] Light-table entries 1..31 are being rotated (Hell colour cycling): stop using cycle-sensitive cached tiles. */
+void LitTileCacheNoteColorCycling();
+#endif
+
 } // namespace devilution

@@ -19,6 +19,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#ifdef OPENFPGAOS
+#include <cstdlib>
+#include <cstring>
+#endif
 
 #include "engine/render/blit_impl.hpp"
 #include "lighting.h"
@@ -1090,7 +1094,348 @@ void RenderBlackTileFull(uint8_t *DVL_RESTRICT dst, uint16_t dstPitch)
 	}
 }
 
+#ifdef OPENFPGAOS
+/* [of] Lit micro-tile cache.
+ *
+ * Partially lit tiles (light levels 1..14) normally pay one colour-map lookup
+ * per pixel on every frame (BlitPixelsWithMap / BlitPixelsBlendedWithMap),
+ * and that is most of the frame on the 100 MHz rv32 core.  The lit result of a
+ * MIN block depends only on (block frame, light table), so build it once into
+ * an arena and render it through the existing FullyLit paths (plain copy,
+ * or BlitPixelsBlended for MaskType::Transparent).  Output is byte-identical:
+ * the opaque path writes tbl[src] either way, and the blended path computes
+ * paletteTransparencyLookup[dst][tbl[src]] before and [tbl[src]][dst] after,
+ * which is the same entry because GenerateBlendedLookupTable() builds the
+ * table symmetric and CycleColors() permutes both indices alike.
+ *
+ * Invalidation: MakeLightTable() (level load) and FreeGameMem() reset the
+ * cache, and a changed pDungeonCels pointer flushes it.  Hell's
+ * lighting_color_cycling() rotates light-table entries 1..31 every tick, so a
+ * block containing any source byte in 1..31 is marked cycle-sensitive and is
+ * rendered uncached while cycling is active.  If the arena cannot be
+ * allocated, rendering falls back to the uncached path. */
+constexpr uint32_t LitFrames = 4096; // LevelCelBlock::frame() is 12 bits
+constexpr size_t LitArenaBytes = 1024 * 1024;
+uint32_t *LitIndex;     // [frame][light]: 0 empty, 2 uncacheable, else (offset + 1) | (sensitive << 1)
+uint8_t *LitArena;
+size_t LitArenaUsed;
+const void *LitCels;
+bool LitAllocFailed;
+bool LitCycling;
+
+void LitRelease()
+{
+	LitTileCacheReset(/*releaseMemory=*/true);
+}
+
+bool LitAlloc()
+{
+	OfReleaseLevelRenderCaches = LitRelease;
+	LitIndex = static_cast<uint32_t *>(std::calloc(LitFrames * NumLightingLevels, sizeof(uint32_t)));
+	LitArena = static_cast<uint8_t *>(std::malloc(LitArenaBytes));
+	if (LitIndex == nullptr || LitArena == nullptr) {
+		std::free(LitIndex);
+		std::free(LitArena);
+		LitIndex = nullptr;
+		LitArena = nullptr;
+		LitAllocFailed = true;
+		return false;
+	}
+	LitArenaUsed = 0;
+	return true;
+}
+
+void LitFlush()
+{
+	if (LitIndex != nullptr)
+		std::memset(LitIndex, 0, LitFrames * NumLightingLevels * sizeof(uint32_t));
+	LitArenaUsed = 0;
+}
+
+size_t LitRawSize(TileType tile)
+{
+	switch (tile) {
+	case TileType::Square: return Width * Height;                       // 32x32 pixels
+	case TileType::LeftTriangle:
+	case TileType::RightTriangle: return 544;                           // 512 pixels + 2 padding bytes on 16 rows
+	case TileType::LeftTrapezoid:
+	case TileType::RightTrapezoid: return 800;                          // 288-byte lower triangle + 32x16 upper rows
+	default: return 0;
+	}
+}
+
+/* [of] Floor triangles get one cached copy per destination phase (see
+ * CopyTriangleCo): the entry of a Left/RightTriangle points at a 16-byte
+ * record of four variant offsets, variant p placed at an arena address
+ * congruent to p mod 4. Light 0 (fully lit) triangles are cached too -- as a
+ * plain copy of the source, exactly what the FullyLit path draws -- only so
+ * that they get phase-matched copies. Other tile types keep one phase-0 copy
+ * and are not cached at light 0. */
+bool LitIsTriangle(TileType tile)
+{
+	return tile == TileType::LeftTriangle || tile == TileType::RightTriangle;
+}
+
+const uint8_t *LitTileLookup(LevelCelBlock levelCelBlock, TileType tile, const uint8_t *src, const uint8_t *tbl, unsigned phase)
+{
+	const ptrdiff_t d = tbl - LightTables[0].data();
+	if (d < 0 || d >= static_cast<ptrdiff_t>(LightsMax) * 256 || (d & 255) != 0)
+		return nullptr;
+	const unsigned light = static_cast<unsigned>(d) >> 8;
+	const bool triangle = LitIsTriangle(tile);
+	if (light == 0 && !triangle)
+		return nullptr;
+	if (!triangle)
+		phase = 0;
+	const unsigned frame = levelCelBlock.frame();
+	if (frame + 1 >= LitFrames)
+		return nullptr;
+	if (LitCels != pDungeonCels.get()) {
+		LitFlush();
+		LitCels = pDungeonCels.get();
+	}
+	if (LitIndex == nullptr && (LitAllocFailed || !LitAlloc()))
+		return nullptr;
+	uint32_t *entry = &LitIndex[frame * NumLightingLevels + light];
+	if ((*entry & 1) != 0) {
+		if ((*entry & 2) != 0 && LitCycling)
+			return nullptr;
+		if (!triangle)
+			return LitArena + (*entry & ~3u);
+		const uint32_t *rec = reinterpret_cast<const uint32_t *>(LitArena + (*entry & ~3u));
+		if (rec[phase] != 0)
+			return LitArena + rec[phase] - 1;
+	} else if (*entry == 2) {
+		return nullptr;
+	}
+
+	const auto *pFrameTable = reinterpret_cast<const uint32_t *>(pDungeonCels.get());
+	const size_t available = SDL_SwapLE32(pFrameTable[frame + 1]) - SDL_SwapLE32(pFrameTable[frame]);
+	size_t size = LitRawSize(tile);
+	if (tile == TileType::TransparentSquare) {
+		// RLE: per row, int8 runs; positive = that many pixels follow, negative = skip.
+		size_t pos = 0;
+		for (int row = 0; row < Height && size == 0; ++row) {
+			int remaining = Width;
+			while (remaining > 0) {
+				if (pos >= available) {
+					*entry = 2;
+					return nullptr;
+				}
+				const auto v = static_cast<int8_t>(src[pos++]);
+				const int run = v > 0 ? v : -v;
+				if (run == 0 || run > remaining) {
+					*entry = 2;
+					return nullptr;
+				}
+				if (v > 0)
+					pos += v;
+				remaining -= run;
+			}
+		}
+		size = pos;
+	}
+	if (size == 0 || size > available || size + 4 + 16 > LitArenaBytes) {
+		*entry = 2;
+		return nullptr;
+	}
+	const bool haveRecord = triangle && (*entry & 1) != 0;
+	const size_t need = (triangle && !haveRecord ? 16 : 0) + ((size + phase + 3) & ~static_cast<size_t>(3));
+	if (LitArenaUsed + need + 16 > LitArenaBytes) {
+		LitFlush(); // every entry, including *entry and its record, is now gone
+		return LitTileLookup(levelCelBlock, tile, src, tbl, phase);
+	}
+	uint32_t *rec = nullptr;
+	if (triangle) {
+		if (haveRecord) {
+			rec = reinterpret_cast<uint32_t *>(LitArena + (*entry & ~3u));
+		} else {
+			rec = reinterpret_cast<uint32_t *>(LitArena + LitArenaUsed);
+			rec[0] = rec[1] = rec[2] = rec[3] = 0;
+			LitArenaUsed += 16;
+		}
+	}
+	uint8_t *out = LitArena + LitArenaUsed + phase;
+	bool sensitive = false;
+	if (light == 0) {
+		std::memcpy(out, src, size);
+	} else if (tile == TileType::TransparentSquare) {
+		size_t pos = 0;
+		while (pos < size) {
+			const auto v = static_cast<int8_t>(src[pos]);
+			out[pos] = src[pos];
+			++pos;
+			for (int i = 0; i < v; ++i, ++pos) {
+				const uint8_t c = src[pos];
+				sensitive |= static_cast<uint8_t>(c - 1) < 31;
+				out[pos] = tbl[c];
+			}
+		}
+	} else {
+		for (size_t i = 0; i < size; ++i) {
+			const uint8_t c = src[i];
+			sensitive |= static_cast<uint8_t>(c - 1) < 31;
+			out[i] = tbl[c];
+		}
+	}
+	if (sensitive && LitCycling) {
+		if (rec != nullptr && !haveRecord)
+			LitArenaUsed -= 16;
+		*entry = 2;
+		return nullptr;
+	}
+	if (triangle) {
+		rec[phase] = static_cast<uint32_t>(out - LitArena) + 1;
+		if (!haveRecord)
+			*entry = static_cast<uint32_t>(reinterpret_cast<uint8_t *>(rec) - LitArena) + 1 + (sensitive ? 2 : 0);
+	} else {
+		*entry = static_cast<uint32_t>(LitArenaUsed) + 1 + (sensitive ? 2 : 0);
+	}
+	LitArenaUsed += (size + phase + 3) & ~static_cast<size_t>(3);
+	return out;
+}
+
+/* [of] Inline hit path of LitTileLookup (same result when it returns non-null;
+ * nullptr means "ask LitTileLookup", which also builds missing entries). */
+DVL_ALWAYS_INLINE const uint8_t *LitTileLookupHit(LevelCelBlock levelCelBlock, TileType tile, const uint8_t *tbl, unsigned phase)
+{
+	if (LitIndex == nullptr || LitCels != pDungeonCels.get())
+		return nullptr;
+	const uintptr_t d = static_cast<uintptr_t>(tbl - LightTables[0].data());
+	if (d >= static_cast<uintptr_t>(LightsMax) * 256 || (d & 255) != 0)
+		return nullptr;
+	const uint32_t entry = LitIndex[levelCelBlock.frame() * NumLightingLevels + (d >> 8)];
+	if ((entry & 1) == 0 || ((entry & 2) != 0 && LitCycling))
+		return nullptr;
+	if (!LitIsTriangle(tile))
+		return LitArena + (entry & ~3u);
+	const uint32_t variant = reinterpret_cast<const uint32_t *>(LitArena + (entry & ~3u))[phase];
+	return variant != 0 ? LitArena + variant - 1 : nullptr;
+}
+
+/* [of] Unclipped Solid floor triangle drawn from a source at the same address
+ * offset mod 4 as the destination (cached variants are placed so). The rows
+ * are those of RenderLeftTriangleFull / RenderRightTriangleFull (Diablo's
+ * triangle layout pads odd rows by two bytes so that this co-alignment holds
+ * for every row), fully unrolled per destination phase: each row is a few
+ * aligned word moves plus at most a halfword/byte at each end, instead of a
+ * BlitPixelsDirect call with byte head/tail loops. Same bytes written. */
+typedef uint16_t __attribute__((may_alias)) OfHalf;
+
+template <unsigned A, unsigned W>
+DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void CopyRowCo(uint8_t *DVL_RESTRICT d, const uint8_t *DVL_RESTRICT s)
+{
+	constexpr unsigned B = ((A & 1) != 0 && W >= 1) ? 1 : 0; // byte to reach an even address
+	constexpr unsigned A1 = (A + B) & 3;
+	constexpr unsigned H = (A1 == 2 && W - B >= 2) ? 2 : 0;  // halfword to reach a word boundary
+	constexpr unsigned R = W - B - H;
+	constexpr unsigned NW = ((A1 + H) & 3) == 0 ? R / 4 : 0;
+	constexpr unsigned T = R - 4 * NW;
+	if constexpr (B != 0)
+		d[0] = s[0];
+	if constexpr (H != 0)
+		*reinterpret_cast<OfHalf *>(d + B) = *reinterpret_cast<const OfHalf *>(s + B);
+	constexpr unsigned O = B + H;
+	if constexpr (NW >= 2) {
+		for (unsigned k = 0; k + 1 < NW; k += 2) {
+			const uint32_t w0 = *reinterpret_cast<const OfWord *>(s + O + 4 * k);
+			const uint32_t w1 = *reinterpret_cast<const OfWord *>(s + O + 4 * k + 4);
+			*reinterpret_cast<OfWord *>(d + O + 4 * k) = w0;
+			*reinterpret_cast<OfWord *>(d + O + 4 * k + 4) = w1;
+		}
+	}
+	if constexpr ((NW & 1) != 0)
+		*reinterpret_cast<OfWord *>(d + O + 4 * (NW - 1)) = *reinterpret_cast<const OfWord *>(s + O + 4 * (NW - 1));
+	constexpr unsigned E = O + 4 * NW;
+	if constexpr (T >= 2)
+		*reinterpret_cast<OfHalf *>(d + E) = *reinterpret_cast<const OfHalf *>(s + E);
+	if constexpr ((T & 1) != 0)
+		d[E + (T & 2)] = s[E + (T & 2)];
+}
+
+template <bool Left>
+constexpr unsigned TriLowerSrc(unsigned i)
+{
+	unsigned off = 0;
+	for (unsigned j = 1; j < i; ++j)
+		off += XStep * j + 2 * (j % 2);
+	return Left ? off + 2 * (i % 2) : off;
+}
+
+template <bool Left>
+constexpr unsigned TriUpperSrc(unsigned i)
+{
+	unsigned off = TriLowerSrc<false>(LowerHeight + 1);
+	for (unsigned j = 1; j < i; ++j)
+		off += Width - XStep * j + 2 * (j % 2);
+	return Left ? off + 2 * (i % 2) : off;
+}
+static_assert(TriLowerSrc<false>(LowerHeight + 1) == 288 && TriUpperSrc<false>(TriangleUpperHeight + 1) == 544);
+
+template <unsigned P, bool Left, unsigned I>
+DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void CopyTriLowerFrom(uint8_t *DVL_RESTRICT row, uint16_t pitch, const uint8_t *DVL_RESTRICT src)
+{
+	if constexpr (I <= LowerHeight) {
+		constexpr unsigned W = XStep * I;
+		constexpr unsigned Dx = Left ? Width - W : 0;
+		CopyRowCo<(P + Dx) & 3, W>(row + Dx, src + TriLowerSrc<Left>(I));
+		CopyTriLowerFrom<P, Left, I + 1>(row - pitch, pitch, src);
+	}
+}
+
+template <unsigned P, bool Left, unsigned I>
+DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void CopyTriUpperFrom(uint8_t *DVL_RESTRICT row, uint16_t pitch, const uint8_t *DVL_RESTRICT src)
+{
+	if constexpr (I <= TriangleUpperHeight) {
+		constexpr unsigned W = Width - XStep * I;
+		constexpr unsigned Dx = Left ? XStep * I : 0;
+		CopyRowCo<(P + Dx) & 3, W>(row + Dx, src + TriUpperSrc<Left>(I));
+		CopyTriUpperFrom<P, Left, I + 1>(row - pitch, pitch, src);
+	}
+}
+
+template <unsigned P, bool Left>
+DVL_ATTRIBUTE_HOT __attribute__((noinline)) void CopyTriangleCo(uint8_t *DVL_RESTRICT dst, uint16_t pitch, const uint8_t *DVL_RESTRICT src)
+{
+	CopyTriLowerFrom<P, Left, 1>(dst, pitch, src);
+	CopyTriUpperFrom<P, Left, 1>(dst - LowerHeight * pitch, pitch, src);
+}
+
+void RenderFloorTriangleCo(bool left, uint8_t *dst, uint16_t pitch, const uint8_t *src)
+{
+	switch (reinterpret_cast<uintptr_t>(dst) & 3) {
+	case 0: left ? CopyTriangleCo<0, true>(dst, pitch, src) : CopyTriangleCo<0, false>(dst, pitch, src); break;
+	case 1: left ? CopyTriangleCo<1, true>(dst, pitch, src) : CopyTriangleCo<1, false>(dst, pitch, src); break;
+	case 2: left ? CopyTriangleCo<2, true>(dst, pitch, src) : CopyTriangleCo<2, false>(dst, pitch, src); break;
+	default: left ? CopyTriangleCo<3, true>(dst, pitch, src) : CopyTriangleCo<3, false>(dst, pitch, src); break;
+	}
+}
+#endif // OPENFPGAOS
+
 } // namespace
+
+#ifdef OPENFPGAOS
+void LitTileCacheReset(bool releaseMemory)
+{
+	if (releaseMemory) {
+		std::free(LitIndex);
+		std::free(LitArena);
+		LitIndex = nullptr;
+		LitArena = nullptr;
+		LitArenaUsed = 0;
+		LitAllocFailed = false;
+	} else {
+		LitFlush();
+	}
+	LitCels = nullptr;
+	LitCycling = false;
+}
+
+void LitTileCacheNoteColorCycling()
+{
+	LitCycling = true;
+}
+#endif
 
 #ifdef DUN_RENDER_STATS
 std::unordered_map<DunRenderType, size_t, DunRenderTypeHash> DunRenderStats;
@@ -1149,6 +1494,25 @@ void RenderTile(const Surface &out, Point position,
 	const auto *src = reinterpret_cast<const uint8_t *>(&pDungeonCels[SDL_SwapLE32(pFrameTable[levelCelBlock.frame()])]);
 	uint8_t *dst = out.at(static_cast<int>(position.x + clip.left), static_cast<int>(position.y - clip.bottom));
 	const uint16_t dstPitch = out.pitch();
+#ifdef OPENFPGAOS
+	const bool floorTriangle = maskType == MaskType::Solid && LitIsTriangle(tile)
+	    && clip.width == Width && clip.height == TriangleHeight;
+	if (tbl != LightTables[LightsMax].data() && (tbl != LightTables[0].data() || floorTriangle)) {
+		const unsigned phase = floorTriangle ? static_cast<unsigned>(reinterpret_cast<uintptr_t>(dst) & 3) : 0;
+		const uint8_t *lit = LitTileLookupHit(levelCelBlock, tile, tbl, phase);
+		if (lit == nullptr)
+			lit = LitTileLookup(levelCelBlock, tile, src, tbl, phase);
+		if (lit != nullptr) {
+			src = lit;
+			tbl = LightTables[0].data();
+		}
+	}
+	if (floorTriangle && tbl == LightTables[0].data()
+	    && ((reinterpret_cast<uintptr_t>(dst) ^ reinterpret_cast<uintptr_t>(src)) & 3) == 0) {
+		RenderFloorTriangleCo(tile == TileType::LeftTriangle, dst, dstPitch, src);
+		return;
+	}
+#endif
 
 #ifdef DUN_RENDER_STATS
 	++DunRenderStats[DunRenderType { tile, maskType }];

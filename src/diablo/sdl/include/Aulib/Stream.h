@@ -47,12 +47,23 @@ public:
 	// Sums this stream into the int32 stereo accumulator for `frames`
 	// output frames; returns false when playback has finished.
 	bool mixInto(int32_t *accum, int frames);
+	// [of] Single-active-stream fast path for 16-bit sources (s16()):
+	// writes exactly the int16 stereo pairs the accumulate + clamp path
+	// would produce for this stream alone (zeros after the end / while
+	// paused); returns false when playback has finished.
+	bool renderS16(int16_t *out, int frames);
+	bool s16() const { return s16_; }
 	void runFinishCallback();
+	// [of] The SDL_RWops this stream decodes from (music read-ahead hook).
+	SDL_RWops *rwops() const { return rwops_; }
 
 private:
 	bool nextFrame(float out[2]);
 	bool decodeRawFrame(float out[2]);
 	bool decodeLoopedFrame(float out[2]);
+	template <bool Direct>
+	bool mixS16(int32_t *accum, int16_t *out, int frames);
+	bool refillS16();
 
 	SDL_RWops *rwops_;
 	std::unique_ptr<Decoder> decoder_;
@@ -86,10 +97,20 @@ private:
 	long consumed_ = 0;
 	float cur_[2] = { 0.0F, 0.0F };
 
-	// Decoded-sample staging buffer.
-	float ibuf_[1024 * 2];
-	int ihave_ = 0; // frames available in ibuf_
-	int ipos_ = 0;  // frames consumed from ibuf_
+	// [of] 16-bit source path: the decoder yields raw int16 samples into
+	// sbuf_ and the held (nearest-neighbor) sample is kept as int16 in
+	// curS_; float value = sample * 2^-15 exactly, so the output matches
+	// the float path bit for bit (see mixS16 in of_aulib.cpp).
+	bool s16_ = false;
+	int16_t curS_[2] = { 0, 0 };
+
+	// Decoded-sample staging buffer (float path: ibuf_, 16-bit path: sbuf_).
+	union {
+		float ibuf_[1024 * 2];
+		int16_t sbuf_[1024 * 2];
+	};
+	int ihave_ = 0; // frames available in ibuf_ / sbuf_
+	int ipos_ = 0;  // frames consumed from ibuf_ / sbuf_
 };
 
 } // namespace Aulib

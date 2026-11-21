@@ -1003,6 +1003,47 @@ void InvDrawSlotBack(const Surface &out, Point targetPosition, Size size, item_q
 	std::uint8_t *dst = &out[targetPosition];
 	const auto dstPitch = out.pitch();
 
+#ifdef OPENFPGAOS
+	// [of] Same per-pixel rule (pixels >= PAL16_GRAY move down by a fixed
+	// amount), four pixels per word: the selected bytes are exactly those whose
+	// high nibble is 0xF, and since they are all >= 240 the per-byte subtract
+	// never borrows across bytes. Byte loops cover the unaligned row ends.
+	{
+		std::uint8_t sub;
+		switch (itemQuality) {
+		case ITEM_QUALITY_MAGIC:
+			sub = PAL16_GRAY - (!IsInspectingPlayer() ? PAL16_BLUE : PAL16_ORANGE) - 1;
+			break;
+		case ITEM_QUALITY_UNIQUE:
+			sub = PAL16_GRAY - (!IsInspectingPlayer() ? PAL16_YELLOW : PAL16_ORANGE) - 1;
+			break;
+		default:
+			sub = PAL16_GRAY - (!IsInspectingPlayer() ? PAL16_BEIGE : PAL16_ORANGE) - 1;
+			break;
+		}
+		typedef std::uint32_t __attribute__((may_alias)) Word;
+		for (int hgt = size.height; hgt != 0; hgt--, dst -= dstPitch) {
+			std::uint8_t *p = dst;
+			int n = size.width;
+			for (; n != 0 && (reinterpret_cast<uintptr_t>(p) & 3) != 0; --n, ++p) {
+				if (*p >= PAL16_GRAY)
+					*p -= sub;
+			}
+			for (; n >= 4; n -= 4, p += 4) {
+				const std::uint32_t w = *reinterpret_cast<Word *>(p);
+				const std::uint32_t notGray = ((((w & 0xF0F0F0F0u) ^ 0xF0F0F0F0u) >> 4) + 0x7F7F7F7Fu) & 0x80808080u;
+				const std::uint32_t gray = (~notGray & 0x80808080u) >> 7;
+				*reinterpret_cast<Word *>(p) = w - gray * sub;
+			}
+			for (; n != 0; --n, ++p) {
+				if (*p >= PAL16_GRAY)
+					*p -= sub;
+			}
+		}
+		return;
+	}
+#endif
+
 	for (int hgt = size.height; hgt != 0; hgt--, dst -= dstPitch + size.width) {
 		for (int wdt = size.width; wdt != 0; wdt--) {
 			std::uint8_t pix = *dst;
@@ -1059,7 +1100,11 @@ void InitInv()
 
 void DrawInv(const Surface &out)
 {
+#ifdef OPENFPGAOS
+	ClxDrawPanel(out, GetPanelPosition(UiPanels::Inventory, { 0, 351 }), (*pInvCels)[0], ClxPanelId::Inventory);
+#else
 	ClxDraw(out, GetPanelPosition(UiPanels::Inventory, { 0, 351 }), (*pInvCels)[0]);
+#endif
 
 	Size slotSize[] = {
 		{ 2, 2 }, // head

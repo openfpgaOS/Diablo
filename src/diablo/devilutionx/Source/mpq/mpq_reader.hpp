@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
@@ -65,6 +66,13 @@ public:
 	// save-layout migration prove its by-name staging found every member
 	// before it rewrites the archive.
 	uint32_t GetFileCount(int32_t &error) const;
+
+#ifdef OPENFPGAOS
+	// [of] Archive handle and absolute byte range of a member's stored data
+	// (music read-ahead, platform/of_mpq_prefetch.h). Returns error code.
+	int32_t GetRawRange(uint32_t fileNumber, std::FILE **fp, std::uint64_t *start, std::uint64_t *size) const;
+	const std::string &GetPath() const { return path_; }
+#endif
 
 private:
 	MpqArchive(std::string path, mpq_archive_s *archive)
